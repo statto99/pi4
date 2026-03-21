@@ -82,36 +82,106 @@ jobs:
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
 
-      # 7. Package boot files
-      - name: Package boot files
+      # 7. Debug: List all bazel outputs
+      - name: Debug - List bazel outputs
+        run: |
+          cd android-kernel
+          echo "=== Listing all bazel outputs ==="
+          find bazel-bin -type f -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" 2>/dev/null | head -30
+          echo "=== bazel-bin structure ==="
+          ls -la bazel-bin/ 2>/dev/null || echo "bazel-bin not found"
+          ls -la bazel-bin/common/ 2>/dev/null || echo "common not found"
+
+      # 8. Find and copy boot files
+      - name: Find and copy boot files
         run: |
           cd android-kernel
           
-          # Find all boot components
-          KERNEL_IMAGE=$(find bazel-bin -name "Image" -type f | head -1)
-          RAMDISK=$(find bazel-bin -name "ramdisk.img" -type f | head -1)
-          RECOVERY_RAMDISK=$(find bazel-bin -name "ramdisk-recovery.img" -type f | head -1)
-          DTB_FILES=$(find bazel-bin -name "*.dtb" -type f)
+          echo "Searching for boot files..."
+          
+          # Search for files in bazel output
+          KERNEL_IMAGE=$(find bazel-bin -type f -name "Image" 2>/dev/null | head -1)
+          RAMDISK=$(find bazel-bin -type f -name "ramdisk.img" 2>/dev/null | head -1)
+          RECOVERY_RAMDISK=$(find bazel-bin -type f -name "ramdisk-recovery.img" 2>/dev/null | head -1)
+          DTB_FILES=$(find bazel-bin -type f -name "*.dtb" 2>/dev/null)
+          
+          echo "Found:"
+          echo "  Kernel: $KERNEL_IMAGE"
+          echo "  Ramdisk: $RAMDISK"
+          echo "  Recovery: $RECOVERY_RAMDISK"
+          echo "  DTB files: $(echo "$DTB_FILES" | wc -l)"
           
           # Create package directory
           mkdir -p android-boot-package
           
-          # Copy files
-          [ -n "$KERNEL_IMAGE" ] && cp "$KERNEL_IMAGE" android-boot-package/Image
-          [ -n "$RAMDISK" ] && cp "$RAMDISK" android-boot-package/ramdisk.img
-          [ -n "$RECOVERY_RAMDISK" ] && cp "$RECOVERY_RAMDISK" android-boot-package/ramdisk-recovery.img
+          # Copy files if found
+          if [ -n "$KERNEL_IMAGE" ] && [ -f "$KERNEL_IMAGE" ]; then
+            cp "$KERNEL_IMAGE" android-boot-package/Image
+            echo "✓ Copied Image"
+          else
+            echo "✗ Image not found!"
+          fi
+          
+          if [ -n "$RAMDISK" ] && [ -f "$RAMDISK" ]; then
+            cp "$RAMDISK" android-boot-package/ramdisk.img
+            echo "✓ Copied ramdisk.img"
+          else
+            echo "✗ ramdisk.img not found!"
+          fi
+          
+          if [ -n "$RECOVERY_RAMDISK" ] && [ -f "$RECOVERY_RAMDISK" ]; then
+            cp "$RECOVERY_RAMDISK" android-boot-package/ramdisk-recovery.img
+            echo "✓ Copied ramdisk-recovery.img"
+          else
+            echo "⚠ ramdisk-recovery.img not found (may be normal)"
+          fi
           
           # Copy DTB files
-          for dtb in $DTB_FILES; do
-            cp "$dtb" android-boot-package/
-          done
+          DTB_COUNT=0
+          if [ -n "$DTB_FILES" ]; then
+            for dtb in $DTB_FILES; do
+              if [ -f "$dtb" ]; then
+                cp "$dtb" android-boot-package/
+                DTB_COUNT=$((DTB_COUNT + 1))
+              fi
+            done
+            echo "✓ Copied $DTB_COUNT DTB files"
+          else
+            echo "⚠ No DTB files found"
+          fi
           
-          echo "Package contents:"
-          ls -la android-boot-package/
+          # Show what we have
+          echo "=== Package contents ==="
+          ls -la android-boot-package/ 2>/dev/null || echo "Package directory empty"
 
-      # 8. Upload boot package
+      # 9. Alternative search if above fails
+      - name: Alternative file search
+        if: failure()
+        run: |
+          cd android-kernel
+          echo "=== Alternative search ==="
+          echo "Searching in common/rpi4..."
+          find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | grep -v ".git" | head -20
+          
+          echo "Checking bazel output location..."
+          if [ -d "bazel-bin/common/rpi4" ]; then
+            echo "Listing bazel-bin/common/rpi4:"
+            ls -la bazel-bin/common/rpi4/ 2>/dev/null || echo "Cannot list"
+          fi
+
+      # 10. Upload boot package
       - name: Upload boot package
         uses: actions/upload-artifact@v4
         with:
           name: android-rpi4-boot-files
           path: android-kernel/android-boot-package/
+          if-no-files-found: error
+
+      # 11. Upload build logs for debugging
+      - name: Upload build logs
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-debug-info
+          path: |
+            android-kernel/bazel-bin/
+          if-no-files-found: warn
