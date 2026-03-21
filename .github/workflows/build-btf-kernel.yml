@@ -1,4 +1,4 @@
-name: Build RPi4 Kernel with BTF
+name: Build RPi4 Kernel with BTF (with WiFi)
 
 on:
   workflow_dispatch:
@@ -38,8 +38,8 @@ jobs:
 
           repo sync -j$(nproc)
 
-      # 4. Patch defconfig for BTF
-      - name: Patch defconfig for BTF
+      # 4. Patch defconfig for BTF AND WiFi
+      - name: Patch defconfig for BTF and WiFi
         run: |
           cd android-kernel
 
@@ -68,49 +68,74 @@ jobs:
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
 
+          # --- WiFi drivers for RPi4 ---
+          CONFIG_WLAN=y
+          CONFIG_WLAN_VENDOR_BROADCOM=y
+          CONFIG_BRCMFMAC=m
+          CONFIG_BRCMFMAC_SDIO=y
+          CONFIG_BRCMFMAC_PROTO_BCDC=y
+          CONFIG_BRCMFMAC_PROTO_MSGBUF=y
+          CONFIG_BRCM_TRACING=y
+          CONFIG_BRCMDBG=y
+          CONFIG_CFG80211=y
+          CONFIG_MAC80211=y
+          CONFIG_MAC80211_RC_MINSTREL=y
+          CONFIG_MAC80211_RC_MINSTREL_HT=y
+          CONFIG_MAC80211_RC_MINSTREL_VHT=y
+          CONFIG_MAC80211_MESH=y
+          CONFIG_RFKILL=y
+          CONFIG_RFKILL_GPIO=y
+
+          # --- Bluetooth (often on same chip) ---
+          CONFIG_BT=y
+          CONFIG_BT_BREDR=y
+          CONFIG_BT_LE=y
+          CONFIG_BT_BCM=y
+          CONFIG_BT_HCIUART=y
+          CONFIG_BT_HCIUART_BCM=y
+
+          # --- Firmware loading ---
+          CONFIG_FW_LOADER=y
+          CONFIG_FW_LOADER_USER_HELPER=y
+          CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
+          CONFIG_EXTRA_FIRMWARE="brcm/brcmfmac43455-sdio.bin brcm/brcmfmac43455-sdio.clm_blob brcm/brcmfmac43455-sdio.txt"
+          CONFIG_EXTRA_FIRMWARE_DIR="/lib/firmware"
+
           EOF
 
-      # 5. Patch build.config
+      # 5. Download WiFi firmware for RPi4
+      - name: Download WiFi firmware
+        run: |
+          cd android-kernel
+          
+          # Create firmware directory structure
+          mkdir -p firmware/brcm
+          
+          # Download RPi4 WiFi firmware
+          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.bin \
+            -o firmware/brcm/brcmfmac43455-sdio.bin
+          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.clm_blob \
+            -o firmware/brcm/brcmfmac43455-sdio.clm_blob
+          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.txt \
+            -o firmware/brcm/brcmfmac43455-sdio.txt
+          
+          echo "WiFi firmware downloaded"
+
+      # 6. Patch build.config to include modules
       - name: Patch build.config
         run: |
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
+          echo "MODULES=1" >> common/build.config.rpi || true
+          echo "EXT_MODULES=\"brcmfmac\"" >> common/build.config.rpi || true
 
-      # 6. Build kernel
+      # 7. Build kernel
       - name: Build kernel
         run: |
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
 
-      # 7. Find the actual output directory
-      - name: Find output files
-        run: |
-          cd android-kernel
-          
-          echo "=== Searching for kernel outputs ==="
-          
-          # Common Android kernel output locations
-          SEARCH_PATHS=(
-            "bazel-bin/common/rpi4/arch/arm64/boot"
-            "bazel-bin/common/rpi4"
-            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4"
-            "out/rpi4/dist"
-            "common/out/rpi4/dist"
-          )
-          
-          for path in "${SEARCH_PATHS[@]}"; do
-            if [ -d "$path" ]; then
-              echo "Found output directory: $path"
-              echo "Contents:"
-              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
-            fi
-          done
-          
-          # Broad search as fallback
-          echo "=== Broad search ==="
-          find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) -not -path "./.git/*" 2>/dev/null | head -20
-
-      # 8. Copy files from the correct Android output location
+      # 8. Find and copy boot files
       - name: Copy boot files
         run: |
           cd android-kernel
@@ -118,99 +143,44 @@ jobs:
           # Create package directory
           mkdir -p android-boot-package
           
-          # Try different possible output locations
-          POSSIBLE_PATHS=(
-            "bazel-bin/common/rpi4/arch/arm64/boot/Image"
-            "bazel-bin/common/rpi4/arch/arm64/boot/Image.gz"
-            "bazel-bin/common/rpi4/Image"
-            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/Image"
-          )
-          
-          # Find and copy Image
-          for path in "${POSSIBLE_PATHS[@]}"; do
-            if ls $path 1> /dev/null 2>&1; then
-              ACTUAL_IMAGE=$(ls $path 2>/dev/null | head -1)
-              echo "Found kernel image at: $ACTUAL_IMAGE"
-              cp "$ACTUAL_IMAGE" android-boot-package/Image
-              break
-            fi
-          done
-          
-          # Find ramdisk files
-          RAMDISK_PATHS=(
-            "bazel-bin/common/rpi4/ramdisk.img"
-            "bazel-bin/common/rpi4/ramdisk-recovery.img"
-            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/ramdisk*.img"
-          )
-          
-          for pattern in "${RAMDISK_PATHS[@]}"; do
-            for file in $pattern; do
-              if [ -f "$file" ]; then
-                filename=$(basename "$file")
-                cp "$file" android-boot-package/
-                echo "Found and copied: $filename"
-              fi
-            done
-          done
+          # Find kernel image
+          KERNEL_IMAGE=$(find bazel-bin -name "Image" -type f 2>/dev/null | head -1)
+          if [ -n "$KERNEL_IMAGE" ]; then
+            cp "$KERNEL_IMAGE" android-boot-package/Image
+            echo "✓ Copied Image"
+          fi
           
           # Find DTB files
-          DTB_PATHS=(
-            "bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
-            "bazel-bin/common/rpi4/*.dtb"
-            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
-          )
-          
-          for pattern in "${DTB_PATHS[@]}"; do
-            for file in $pattern; do
-              if [ -f "$file" ]; then
-                cp "$file" android-boot-package/
-                echo "Found and copied: $(basename $file)"
-              fi
-            done
+          DTB_FILES=$(find bazel-bin -name "*.dtb" -type f 2>/dev/null)
+          for dtb in $DTB_FILES; do
+            cp "$dtb" android-boot-package/
+            echo "✓ Copied $(basename $dtb)"
           done
           
-          # If still no files, try the dist directory (common Android output)
-          if [ -z "$(ls -A android-boot-package)" ]; then
-            echo "Trying dist directory..."
-            if [ -d "bazel-bin/common/rpi4/dist" ]; then
-              cp bazel-bin/common/rpi4/dist/* android-boot-package/ 2>/dev/null || true
-            fi
+          # Look for modules
+          MODULES_DIR=$(find bazel-bin -type d -name "modules" 2>/dev/null | head -1)
+          if [ -n "$MODULES_DIR" ]; then
+            mkdir -p android-boot-package/modules
+            find "$MODULES_DIR" -name "*.ko" -type f | head -20 | while read module; do
+              cp "$module" android-boot-package/modules/
+              echo "✓ Copied module: $(basename $module)"
+            done
           fi
           
-          # Final check
-          echo "=== Final package contents ==="
-          ls -la android-boot-package/ || echo "Package is empty"
-
-      # 9. Last resort: Check bazel symlinks
-      - name: Check bazel symlinks
-        if: failure()
-        run: |
-          cd android-kernel
-          echo "=== Checking bazel symlink structure ==="
-          if [ -L "bazel-bin" ]; then
-            echo "bazel-bin is a symlink to: $(readlink bazel-bin)"
-            REAL_PATH=$(readlink -f bazel-bin)
-            echo "Real path: $REAL_PATH"
-            if [ -d "$REAL_PATH" ]; then
-              echo "Contents of real path:"
-              find "$REAL_PATH" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null
-            fi
+          # Copy firmware
+          if [ -d "firmware" ]; then
+            mkdir -p android-boot-package/firmware
+            cp -r firmware/* android-boot-package/firmware/
+            echo "✓ Copied firmware"
           fi
+          
+          # Show package contents
+          echo "=== Package contents ==="
+          find android-boot-package -type f | sort
 
-      # 10. Upload boot package
+      # 9. Upload boot package
       - name: Upload boot package
         uses: actions/upload-artifact@v4
         with:
-          name: android-rpi4-boot-files
-          path: android-kernel/android-boot-package/*
-          if-no-files-found: warn
-
-      # 11. Upload entire bazel output for debugging
-      - name: Upload bazel output for analysis
-        uses: actions/upload-artifact@v4
-        with:
-          name: bazel-output-debug
-          path: |
-            android-kernel/bazel-bin/
-          if-no-files-found: warn
-        if: always()
+          name: android-rpi4-boot-files-with-wifi
+          path: android-kernel/android-boot-package/
