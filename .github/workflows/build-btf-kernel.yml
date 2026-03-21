@@ -1,4 +1,4 @@
-name: Build RPi4 Kernel with BTF (Android 16)
+name: Build RPi4 Kernel with BTF (Android 16 - Fixed)
 
 on:
   workflow_dispatch:
@@ -8,11 +8,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      # 1. Checkout YOUR repo (device repo)
+      # 1. Checkout your repo (not strictly required, but standard)
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Install required tools (CRITICAL: pahole)
+      # 2. Install dependencies (CRITICAL: pahole/dwarves)
       - name: Install dependencies
         run: |
           sudo apt update
@@ -24,7 +24,7 @@ jobs:
             libssl-dev libelf-dev \
             dwarves pahole
 
-      # 3. Init Android kernel repo
+      # 3. Initialize Android kernel source (Kleaf)
       - name: Init kernel repo
         run: |
           mkdir android-kernel
@@ -38,8 +38,8 @@ jobs:
 
           repo sync -j$(nproc)
 
-      # 4. Enable BTF in defconfig
-      - name: Patch defconfig (enable BTF)
+      # 4. Patch kernel defconfig (THIS FIXES YOUR ERROR)
+      - name: Patch defconfig (enable BTF safely)
         run: |
           cd android-kernel
 
@@ -47,37 +47,46 @@ jobs:
 
           cat <<EOF >> $CONFIG
 
+          # --- REQUIRED: override Android default ---
+          CONFIG_DEBUG_INFO_NONE=n
+
+          # --- Enable debug info (required for BTF) ---
+          CONFIG_DEBUG_INFO=y
+          CONFIG_DEBUG_INFO_DWARF5=y
+
+          # --- Enable BTF ---
+          CONFIG_DEBUG_INFO_BTF=y
+          CONFIG_DEBUG_INFO_BTF_MODULES=y
+
+          # --- Must be disabled for BTF ---
+          CONFIG_DEBUG_INFO_REDUCED=n
+          CONFIG_DEBUG_INFO_SPLIT=n
+
+          # --- BPF core ---
           CONFIG_BPF=y
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
 
-          CONFIG_DEBUG_INFO=y
-          CONFIG_DEBUG_INFO_DWARF5=y
-
-          CONFIG_DEBUG_INFO_BTF=y
-          CONFIG_DEBUG_INFO_BTF_MODULES=y
-
-          CONFIG_DEBUG_INFO_REDUCED=n
-          CONFIG_DEBUG_INFO_SPLIT=n
           EOF
 
-      # 5. Force Android build system to KEEP debug info
+      # 5. Ensure Android build system keeps debug info
       - name: Patch build.config
         run: |
           cd android-kernel
-
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
 
       # 6. Build kernel using Bazel (Kleaf)
       - name: Build kernel
         run: |
           cd android-kernel
-          tools/bazel build --config=fast //common:rpi4
+          tools/bazel build //common:rpi4
 
       # 7. Verify BTF exists (FAIL if missing)
       - name: Verify BTF
         run: |
           cd android-kernel
+
+          echo "Checking for BTF section..."
           readelf -S bazel-bin/common/rpi4/vmlinux | grep BTF
 
       # 8. Upload kernel artifacts
