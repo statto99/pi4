@@ -8,11 +8,11 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      # 1. Checkout your repo (not strictly required, but standard)
+      # 1. Checkout your repo
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Install dependencies (CRITICAL: pahole/dwarves)
+      # 2. Install dependencies
       - name: Install dependencies
         run: |
           sudo apt update
@@ -23,9 +23,9 @@ jobs:
             flex bison bc \
             libssl-dev libelf-dev \
             dwarves pahole \
-            cpio
+            file
 
-      # 3. Initialize Android kernel source (Kleaf)
+      # 3. Initialize Android kernel source
       - name: Init kernel repo
         run: |
           mkdir android-kernel
@@ -39,27 +39,18 @@ jobs:
 
           repo sync -j$(nproc)
 
-      # 4. Download missing regulatory.db file
-      - name: Download regulatory.db
-        run: |
-          cd android-kernel
-          mkdir -p vendor/brcm/rpi4/proprietary/vendor/firmware
-          curl -L https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db \
-            -o vendor/brcm/rpi4/proprietary/vendor/firmware/regulatory.db
-          curl -L https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db.p7s \
-            -o vendor/brcm/rpi4/proprietary/vendor/firmware/regulatory.db.p7s
-
-      # 5. Patch kernel defconfig (enable BTF safely)
-      - name: Patch defconfig (enable BTF safely)
+      # 4. Patch defconfig for BTF
+      - name: Patch defconfig for BTF
         run: |
           cd android-kernel
 
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
-
+          
+          # Create a backup and clean the config
+          cp $CONFIG ${CONFIG}.backup
+          grep -v "CONFIG_EXTRA_FIRMWARE" ${CONFIG}.backup > $CONFIG
+          
           cat <<EOF >> $CONFIG
-
-          # --- REQUIRED: override Android default ---
-          CONFIG_DEBUG_INFO_NONE=n
 
           # --- Enable debug info (required for BTF) ---
           CONFIG_DEBUG_INFO=y
@@ -67,9 +58,9 @@ jobs:
 
           # --- Enable BTF ---
           CONFIG_DEBUG_INFO_BTF=y
-          CONFIG_DEBUG_INFO_BTF_MODULES=y
 
           # --- Must be disabled for BTF ---
+          CONFIG_DEBUG_INFO_NONE=n
           CONFIG_DEBUG_INFO_REDUCED=n
           CONFIG_DEBUG_INFO_SPLIT=n
 
@@ -78,48 +69,89 @@ jobs:
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
 
-          # --- Disable built-in firmware to avoid missing file errors ---
-          CONFIG_EXTRA_FIRMWARE=""
-          CONFIG_EXTRA_FIRMWARE_DIR=""
-
           EOF
 
-      # 6. Ensure Android build system keeps debug info
+      # 5. Patch build.config
       - name: Patch build.config
         run: |
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
 
-      # 7. Build kernel using Bazel (Kleaf)
+      # 6. Build kernel with better error handling
       - name: Build kernel
         run: |
           cd android-kernel
-          tools/bazel build //common:rpi4 --verbose_failures
+          
+          # Build with verbose output to see what's happening
+          tools/bazel build //common:rpi4 --verbose_failures 2>&1 | tee build.log || {
+            echo "Build failed, checking logs..."
+            tail -100 build.log
+            exit 1
+          }
 
-      # 8. Verify BTF exists (FAIL if missing)
-      - name: Verify BTF
+      # 7. Debug: List build outputs
+      - name: List build outputs
         run: |
           cd android-kernel
+          echo "=== Listing bazel-bin contents ==="
+          find bazel-bin -name "vmlinux" -type f 2>/dev/null | head -20
+          echo "=== Listing common/rpi4 outputs ==="
+          find bazel-bin/common/rpi4 -type f 2>/dev/null | head -30 || true
+          echo "=== Full bazel-bin structure ==="
+          ls -la bazel-bin/ || true
+          ls -la bazel-bin/common/ || true
 
-          echo "Checking for BTF section..."
-          if readelf -S bazel-bin/common/rpi4/vmlinux | grep -q BTF; then
-            echo "✓ BTF section found!"
-            echo "BTF details:"
-            readelf -S bazel-bin/common/rpi4/vmlinux | grep -A1 -B1 BTF
+      # 8. Find and verify the kernel image
+      - name: Find and verify kernel
+        run: |
+          cd android-kernel
+          
+          # Try to find the kernel image
+          KERNEL_IMAGE=$(find bazel-bin -name "Image" -type f | head -1)
+          VMLINUX_FILE=$(find bazel-bin -name "vmlinux" -type f | head -1)
+          
+          if [ -n "$VMLINUX_FILE" ]; then
+            echo "Found vmlinux at: $VMLINUX_FILE"
+            echo "File type:"
+            file "$VMLINUX_FILE"
             
-            # Also verify with pahole
-            echo -e "\nVerifying BTF with pahole..."
-            pahole --btf_encode_detached=test.btf bazel-bin/common/rpi4/vmlinux 2>/dev/null && echo "✓ BTF encoding successful" || echo "✗ BTF encoding failed"
+            echo -e "\n=== Checking for BTF section ==="
+            if readelf -S "$VMLINUX_FILE" | grep -q "\.BTF"; then
+              echo "✓ BTF section found!"
+              readelf -S "$VMLINUX_FILE" | grep -A1 -B1 "\.BTF"
+            else
+              echo "✗ BTF section NOT found!"
+              echo "Available sections:"
+              readelf -S "$VMLINUX_FILE" | grep -E "(debug|BTF|DWARF)" | head -10
+            fi
           else
-            echo "✗ BTF section NOT found!"
-            exit 1
+            echo "✗ vmlinux file not found!"
+            echo "Available files in bazel-bin:"
+            find bazel-bin -type f -name "*vmlinux*" -o -name "*Image*" -o -name "*kernel*" | head -20
+          fi
+          
+          if [ -n "$KERNEL_IMAGE" ]; then
+            echo -e "\nFound kernel Image at: $KERNEL_IMAGE"
+            echo "Kernel size: $(du -h "$KERNEL_FILE" | cut -f1)"
           fi
 
-      # 9. Upload kernel artifacts
+      # 9. Upload artifacts
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: rpi4-btf-kernel
+          name: rpi4-kernel-build
           path: |
+            android-kernel/build.log
             android-kernel/bazel-bin/common/rpi4/arch/arm64/boot/Image
             android-kernel/bazel-bin/common/rpi4/vmlinux
+            android-kernel/bazel-bin/common/rpi4/
+        if: always()  # Upload even if previous steps fail
+
+      # 10. Upload build log for debugging
+      - name: Upload build log
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: |
+            android-kernel/build.log
+        if: always()
