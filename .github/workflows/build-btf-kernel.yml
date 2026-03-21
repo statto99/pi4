@@ -1,4 +1,4 @@
-name: Build RPi4 Kernel with BTF (Android 16 - Fixed)
+name: Build RPi4 Kernel with BTF
 
 on:
   workflow_dispatch:
@@ -8,7 +8,7 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      # 1. Checkout your repo
+      # 1. Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -22,8 +22,7 @@ jobs:
             clang llvm lld \
             flex bison bc \
             libssl-dev libelf-dev \
-            dwarves pahole \
-            file
+            dwarves pahole
 
       # 3. Initialize Android kernel source
       - name: Init kernel repo
@@ -77,81 +76,42 @@ jobs:
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
 
-      # 6. Build kernel with better error handling
+      # 6. Build kernel
       - name: Build kernel
         run: |
           cd android-kernel
-          
-          # Build with verbose output to see what's happening
-          tools/bazel build //common:rpi4 --verbose_failures 2>&1 | tee build.log || {
-            echo "Build failed, checking logs..."
-            tail -100 build.log
-            exit 1
-          }
+          tools/bazel build //common:rpi4 --verbose_failures
 
-      # 7. Debug: List build outputs
-      - name: List build outputs
-        run: |
-          cd android-kernel
-          echo "=== Listing bazel-bin contents ==="
-          find bazel-bin -name "vmlinux" -type f 2>/dev/null | head -20
-          echo "=== Listing common/rpi4 outputs ==="
-          find bazel-bin/common/rpi4 -type f 2>/dev/null | head -30 || true
-          echo "=== Full bazel-bin structure ==="
-          ls -la bazel-bin/ || true
-          ls -la bazel-bin/common/ || true
-
-      # 8. Find and verify the kernel image
-      - name: Find and verify kernel
+      # 7. Package boot files
+      - name: Package boot files
         run: |
           cd android-kernel
           
-          # Try to find the kernel image
+          # Find all boot components
           KERNEL_IMAGE=$(find bazel-bin -name "Image" -type f | head -1)
-          VMLINUX_FILE=$(find bazel-bin -name "vmlinux" -type f | head -1)
+          RAMDISK=$(find bazel-bin -name "ramdisk.img" -type f | head -1)
+          RECOVERY_RAMDISK=$(find bazel-bin -name "ramdisk-recovery.img" -type f | head -1)
+          DTB_FILES=$(find bazel-bin -name "*.dtb" -type f)
           
-          if [ -n "$VMLINUX_FILE" ]; then
-            echo "Found vmlinux at: $VMLINUX_FILE"
-            echo "File type:"
-            file "$VMLINUX_FILE"
-            
-            echo -e "\n=== Checking for BTF section ==="
-            if readelf -S "$VMLINUX_FILE" | grep -q "\.BTF"; then
-              echo "✓ BTF section found!"
-              readelf -S "$VMLINUX_FILE" | grep -A1 -B1 "\.BTF"
-            else
-              echo "✗ BTF section NOT found!"
-              echo "Available sections:"
-              readelf -S "$VMLINUX_FILE" | grep -E "(debug|BTF|DWARF)" | head -10
-            fi
-          else
-            echo "✗ vmlinux file not found!"
-            echo "Available files in bazel-bin:"
-            find bazel-bin -type f -name "*vmlinux*" -o -name "*Image*" -o -name "*kernel*" | head -20
-          fi
+          # Create package directory
+          mkdir -p android-boot-package
           
-          if [ -n "$KERNEL_IMAGE" ]; then
-            echo -e "\nFound kernel Image at: $KERNEL_IMAGE"
-            echo "Kernel size: $(du -h "$KERNEL_FILE" | cut -f1)"
-          fi
+          # Copy files
+          [ -n "$KERNEL_IMAGE" ] && cp "$KERNEL_IMAGE" android-boot-package/Image
+          [ -n "$RAMDISK" ] && cp "$RAMDISK" android-boot-package/ramdisk.img
+          [ -n "$RECOVERY_RAMDISK" ] && cp "$RECOVERY_RAMDISK" android-boot-package/ramdisk-recovery.img
+          
+          # Copy DTB files
+          for dtb in $DTB_FILES; do
+            cp "$dtb" android-boot-package/
+          done
+          
+          echo "Package contents:"
+          ls -la android-boot-package/
 
-      # 9. Upload artifacts
-      - name: Upload artifacts
+      # 8. Upload boot package
+      - name: Upload boot package
         uses: actions/upload-artifact@v4
         with:
-          name: rpi4-kernel-build
-          path: |
-            android-kernel/build.log
-            android-kernel/bazel-bin/common/rpi4/arch/arm64/boot/Image
-            android-kernel/bazel-bin/common/rpi4/vmlinux
-            android-kernel/bazel-bin/common/rpi4/
-        if: always()  # Upload even if previous steps fail
-
-      # 10. Upload build log for debugging
-      - name: Upload build log
-        uses: actions/upload-artifact@v4
-        with:
-          name: build-logs
-          path: |
-            android-kernel/build.log
-        if: always()
+          name: android-rpi4-boot-files
+          path: android-kernel/android-boot-package/
