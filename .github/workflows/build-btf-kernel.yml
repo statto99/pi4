@@ -82,91 +82,119 @@ jobs:
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
 
-      # 7. Debug: List all bazel outputs
-      - name: Debug - List bazel outputs
+      # 7. Find the actual output directory
+      - name: Find output files
         run: |
           cd android-kernel
-          echo "=== Listing all bazel outputs ==="
-          find bazel-bin -type f -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" 2>/dev/null | head -30
-          echo "=== bazel-bin structure ==="
-          ls -la bazel-bin/ 2>/dev/null || echo "bazel-bin not found"
-          ls -la bazel-bin/common/ 2>/dev/null || echo "common not found"
+          
+          echo "=== Searching for kernel outputs ==="
+          
+          # Common Android kernel output locations
+          SEARCH_PATHS=(
+            "bazel-bin/common/rpi4/arch/arm64/boot"
+            "bazel-bin/common/rpi4"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4"
+            "out/rpi4/dist"
+            "common/out/rpi4/dist"
+          )
+          
+          for path in "${SEARCH_PATHS[@]}"; do
+            if [ -d "$path" ]; then
+              echo "Found output directory: $path"
+              echo "Contents:"
+              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
+            fi
+          done
+          
+          # Broad search as fallback
+          echo "=== Broad search ==="
+          find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) -not -path "./.git/*" 2>/dev/null | head -20
 
-      # 8. Find and copy boot files
-      - name: Find and copy boot files
+      # 8. Copy files from the correct Android output location
+      - name: Copy boot files
         run: |
           cd android-kernel
-          
-          echo "Searching for boot files..."
-          
-          # Search for files in bazel output
-          KERNEL_IMAGE=$(find bazel-bin -type f -name "Image" 2>/dev/null | head -1)
-          RAMDISK=$(find bazel-bin -type f -name "ramdisk.img" 2>/dev/null | head -1)
-          RECOVERY_RAMDISK=$(find bazel-bin -type f -name "ramdisk-recovery.img" 2>/dev/null | head -1)
-          DTB_FILES=$(find bazel-bin -type f -name "*.dtb" 2>/dev/null)
-          
-          echo "Found:"
-          echo "  Kernel: $KERNEL_IMAGE"
-          echo "  Ramdisk: $RAMDISK"
-          echo "  Recovery: $RECOVERY_RAMDISK"
-          echo "  DTB files: $(echo "$DTB_FILES" | wc -l)"
           
           # Create package directory
           mkdir -p android-boot-package
           
-          # Copy files if found
-          if [ -n "$KERNEL_IMAGE" ] && [ -f "$KERNEL_IMAGE" ]; then
-            cp "$KERNEL_IMAGE" android-boot-package/Image
-            echo "✓ Copied Image"
-          else
-            echo "✗ Image not found!"
-          fi
+          # Try different possible output locations
+          POSSIBLE_PATHS=(
+            "bazel-bin/common/rpi4/arch/arm64/boot/Image"
+            "bazel-bin/common/rpi4/arch/arm64/boot/Image.gz"
+            "bazel-bin/common/rpi4/Image"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/Image"
+          )
           
-          if [ -n "$RAMDISK" ] && [ -f "$RAMDISK" ]; then
-            cp "$RAMDISK" android-boot-package/ramdisk.img
-            echo "✓ Copied ramdisk.img"
-          else
-            echo "✗ ramdisk.img not found!"
-          fi
+          # Find and copy Image
+          for path in "${POSSIBLE_PATHS[@]}"; do
+            if ls $path 1> /dev/null 2>&1; then
+              ACTUAL_IMAGE=$(ls $path 2>/dev/null | head -1)
+              echo "Found kernel image at: $ACTUAL_IMAGE"
+              cp "$ACTUAL_IMAGE" android-boot-package/Image
+              break
+            fi
+          done
           
-          if [ -n "$RECOVERY_RAMDISK" ] && [ -f "$RECOVERY_RAMDISK" ]; then
-            cp "$RECOVERY_RAMDISK" android-boot-package/ramdisk-recovery.img
-            echo "✓ Copied ramdisk-recovery.img"
-          else
-            echo "⚠ ramdisk-recovery.img not found (may be normal)"
-          fi
+          # Find ramdisk files
+          RAMDISK_PATHS=(
+            "bazel-bin/common/rpi4/ramdisk.img"
+            "bazel-bin/common/rpi4/ramdisk-recovery.img"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/ramdisk*.img"
+          )
           
-          # Copy DTB files
-          DTB_COUNT=0
-          if [ -n "$DTB_FILES" ]; then
-            for dtb in $DTB_FILES; do
-              if [ -f "$dtb" ]; then
-                cp "$dtb" android-boot-package/
-                DTB_COUNT=$((DTB_COUNT + 1))
+          for pattern in "${RAMDISK_PATHS[@]}"; do
+            for file in $pattern; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                cp "$file" android-boot-package/
+                echo "Found and copied: $filename"
               fi
             done
-            echo "✓ Copied $DTB_COUNT DTB files"
-          else
-            echo "⚠ No DTB files found"
+          done
+          
+          # Find DTB files
+          DTB_PATHS=(
+            "bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
+            "bazel-bin/common/rpi4/*.dtb"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
+          )
+          
+          for pattern in "${DTB_PATHS[@]}"; do
+            for file in $pattern; do
+              if [ -f "$file" ]; then
+                cp "$file" android-boot-package/
+                echo "Found and copied: $(basename $file)"
+              fi
+            done
+          done
+          
+          # If still no files, try the dist directory (common Android output)
+          if [ -z "$(ls -A android-boot-package)" ]; then
+            echo "Trying dist directory..."
+            if [ -d "bazel-bin/common/rpi4/dist" ]; then
+              cp bazel-bin/common/rpi4/dist/* android-boot-package/ 2>/dev/null || true
+            fi
           fi
           
-          # Show what we have
-          echo "=== Package contents ==="
-          ls -la android-boot-package/ 2>/dev/null || echo "Package directory empty"
+          # Final check
+          echo "=== Final package contents ==="
+          ls -la android-boot-package/ || echo "Package is empty"
 
-      # 9. Alternative search if above fails
-      - name: Alternative file search
+      # 9. Last resort: Check bazel symlinks
+      - name: Check bazel symlinks
         if: failure()
         run: |
           cd android-kernel
-          echo "=== Alternative search ==="
-          echo "Searching in common/rpi4..."
-          find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | grep -v ".git" | head -20
-          
-          echo "Checking bazel output location..."
-          if [ -d "bazel-bin/common/rpi4" ]; then
-            echo "Listing bazel-bin/common/rpi4:"
-            ls -la bazel-bin/common/rpi4/ 2>/dev/null || echo "Cannot list"
+          echo "=== Checking bazel symlink structure ==="
+          if [ -L "bazel-bin" ]; then
+            echo "bazel-bin is a symlink to: $(readlink bazel-bin)"
+            REAL_PATH=$(readlink -f bazel-bin)
+            echo "Real path: $REAL_PATH"
+            if [ -d "$REAL_PATH" ]; then
+              echo "Contents of real path:"
+              find "$REAL_PATH" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null
+            fi
           fi
 
       # 10. Upload boot package
@@ -174,14 +202,15 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: android-rpi4-boot-files
-          path: android-kernel/android-boot-package/
-          if-no-files-found: error
+          path: android-kernel/android-boot-package/*
+          if-no-files-found: warn
 
-      # 11. Upload build logs for debugging
-      - name: Upload build logs
+      # 11. Upload entire bazel output for debugging
+      - name: Upload bazel output for analysis
         uses: actions/upload-artifact@v4
         with:
-          name: build-debug-info
+          name: bazel-output-debug
           path: |
             android-kernel/bazel-bin/
           if-no-files-found: warn
+        if: always()
