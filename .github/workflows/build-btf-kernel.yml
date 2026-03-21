@@ -22,7 +22,8 @@ jobs:
             clang llvm lld \
             flex bison bc \
             libssl-dev libelf-dev \
-            dwarves pahole
+            dwarves pahole \
+            cpio
 
       # 3. Initialize Android kernel source (Kleaf)
       - name: Init kernel repo
@@ -38,7 +39,17 @@ jobs:
 
           repo sync -j$(nproc)
 
-      # 4. Patch kernel defconfig (FIXED: Remove problematic config)
+      # 4. Download missing regulatory.db file
+      - name: Download regulatory.db
+        run: |
+          cd android-kernel
+          mkdir -p vendor/brcm/rpi4/proprietary/vendor/firmware
+          curl -L https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db \
+            -o vendor/brcm/rpi4/proprietary/vendor/firmware/regulatory.db
+          curl -L https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db.p7s \
+            -o vendor/brcm/rpi4/proprietary/vendor/firmware/regulatory.db.p7s
+
+      # 5. Patch kernel defconfig (enable BTF safely)
       - name: Patch defconfig (enable BTF safely)
         run: |
           cd android-kernel
@@ -67,27 +78,25 @@ jobs:
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
 
+          # --- Disable built-in firmware to avoid missing file errors ---
+          CONFIG_EXTRA_FIRMWARE=""
+          CONFIG_EXTRA_FIRMWARE_DIR=""
+
           EOF
 
-      # 5. Alternative: Fix regulatory.db issue via build.config
+      # 6. Ensure Android build system keeps debug info
       - name: Patch build.config
         run: |
           cd android-kernel
-          
-          # Add DEBUG_INFO flag
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
-          
-          # Fix regulatory.db issue via KCONFIG_ADDITIONAL_OPTIONS
-          # This is cleaner than modifying defconfig directly
-          echo 'KCONFIG_ADDITIONAL_OPTIONS="CFG80211_REQUIRE_SIGNED_REGDB=n"' >> common/build.config.rpi || true
 
-      # 6. Build kernel using Bazel (Kleaf)
+      # 7. Build kernel using Bazel (Kleaf)
       - name: Build kernel
         run: |
           cd android-kernel
-          tools/bazel build //common:rpi4
+          tools/bazel build //common:rpi4 --verbose_failures
 
-      # 7. Verify BTF exists (FAIL if missing)
+      # 8. Verify BTF exists (FAIL if missing)
       - name: Verify BTF
         run: |
           cd android-kernel
@@ -97,12 +106,16 @@ jobs:
             echo "✓ BTF section found!"
             echo "BTF details:"
             readelf -S bazel-bin/common/rpi4/vmlinux | grep -A1 -B1 BTF
+            
+            # Also verify with pahole
+            echo -e "\nVerifying BTF with pahole..."
+            pahole --btf_encode_detached=test.btf bazel-bin/common/rpi4/vmlinux 2>/dev/null && echo "✓ BTF encoding successful" || echo "✗ BTF encoding failed"
           else
             echo "✗ BTF section NOT found!"
             exit 1
           fi
 
-      # 8. Upload kernel artifacts
+      # 9. Upload kernel artifacts
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
