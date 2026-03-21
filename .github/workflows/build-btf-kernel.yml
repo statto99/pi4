@@ -1,0 +1,90 @@
+name: Build RPi4 Kernel with BTF (Android 16)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-24.04
+
+    steps:
+      # 1. Checkout YOUR repo (device repo)
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # 2. Install required tools (CRITICAL: pahole)
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            repo git curl \
+            build-essential \
+            clang llvm lld \
+            flex bison bc \
+            libssl-dev libelf-dev \
+            dwarves pahole
+
+      # 3. Init Android kernel repo
+      - name: Init kernel repo
+        run: |
+          mkdir android-kernel
+          cd android-kernel
+
+          repo init -u https://android.googlesource.com/kernel/manifest -b common-android16-6.12-lts
+
+          mkdir -p .repo/local_manifests
+          curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml \
+            -o .repo/local_manifests/rpi.xml
+
+          repo sync -j$(nproc)
+
+      # 4. Enable BTF in defconfig
+      - name: Patch defconfig (enable BTF)
+        run: |
+          cd android-kernel
+
+          CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
+
+          cat <<EOF >> $CONFIG
+
+          CONFIG_BPF=y
+          CONFIG_BPF_SYSCALL=y
+          CONFIG_BPF_JIT=y
+
+          CONFIG_DEBUG_INFO=y
+          CONFIG_DEBUG_INFO_DWARF5=y
+
+          CONFIG_DEBUG_INFO_BTF=y
+          CONFIG_DEBUG_INFO_BTF_MODULES=y
+
+          CONFIG_DEBUG_INFO_REDUCED=n
+          CONFIG_DEBUG_INFO_SPLIT=n
+          EOF
+
+      # 5. Force Android build system to KEEP debug info
+      - name: Patch build.config
+        run: |
+          cd android-kernel
+
+          echo "DEBUG_INFO=1" >> common/build.config.rpi || true
+
+      # 6. Build kernel using Bazel (Kleaf)
+      - name: Build kernel
+        run: |
+          cd android-kernel
+          tools/bazel build --config=fast //common:rpi4
+
+      # 7. Verify BTF exists (FAIL if missing)
+      - name: Verify BTF
+        run: |
+          cd android-kernel
+          readelf -S bazel-bin/common/rpi4/vmlinux | grep BTF
+
+      # 8. Upload kernel artifacts
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: rpi4-btf-kernel
+          path: |
+            android-kernel/bazel-bin/common/rpi4/arch/arm64/boot/Image
+            android-kernel/bazel-bin/common/rpi4/vmlinux
