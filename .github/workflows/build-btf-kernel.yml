@@ -67,6 +67,9 @@ jobs:
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
 
+          # --- FIX: avoid missing regulatory.db ---
+          CONFIG_CFG80211_REQUIRE_SIGNED_REGDB=n
+
           EOF
 
       # 5. Ensure Android build system keeps debug info
