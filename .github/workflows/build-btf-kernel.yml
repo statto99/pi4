@@ -38,7 +38,7 @@ jobs:
 
           repo sync -j$(nproc)
 
-      # 4. Patch kernel defconfig (THIS FIXES YOUR ERROR)
+      # 4. Patch kernel defconfig (FIXED: Remove problematic config)
       - name: Patch defconfig (enable BTF safely)
         run: |
           cd android-kernel
@@ -67,16 +67,19 @@ jobs:
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
 
-          # --- FIX: avoid missing regulatory.db ---
-          CONFIG_CFG80211_REQUIRE_SIGNED_REGDB=n
-
           EOF
 
-      # 5. Ensure Android build system keeps debug info
+      # 5. Alternative: Fix regulatory.db issue via build.config
       - name: Patch build.config
         run: |
           cd android-kernel
+          
+          # Add DEBUG_INFO flag
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
+          
+          # Fix regulatory.db issue via KCONFIG_ADDITIONAL_OPTIONS
+          # This is cleaner than modifying defconfig directly
+          echo 'KCONFIG_ADDITIONAL_OPTIONS="CFG80211_REQUIRE_SIGNED_REGDB=n"' >> common/build.config.rpi || true
 
       # 6. Build kernel using Bazel (Kleaf)
       - name: Build kernel
@@ -90,7 +93,14 @@ jobs:
           cd android-kernel
 
           echo "Checking for BTF section..."
-          readelf -S bazel-bin/common/rpi4/vmlinux | grep BTF
+          if readelf -S bazel-bin/common/rpi4/vmlinux | grep -q BTF; then
+            echo "✓ BTF section found!"
+            echo "BTF details:"
+            readelf -S bazel-bin/common/rpi4/vmlinux | grep -A1 -B1 BTF
+          else
+            echo "✗ BTF section NOT found!"
+            exit 1
+          fi
 
       # 8. Upload kernel artifacts
       - name: Upload artifacts
