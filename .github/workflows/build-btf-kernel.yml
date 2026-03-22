@@ -1,4 +1,4 @@
-name: Build RPi4 Kernel with BTF + WiFi (Diagnostic)
+name: Build RPi4 Kernel with BTF + WiFi
 
 on:
   workflow_dispatch:
@@ -25,37 +25,6 @@ jobs:
           curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
 
-      - name: Diagnose Kconfig dependencies
-        run: |
-          cd android-kernel
-
-          echo "=== config WEXT_CORE definition ==="
-          grep -rn "^config WEXT_CORE" common/ || echo "WEXT_CORE config entry not found"
-
-          echo ""
-          echo "=== config WEXT_PROC definition ==="
-          grep -rn "^config WEXT_PROC" common/ || echo "WEXT_PROC config entry not found"
-
-          echo ""
-          echo "=== config COMPAT_NETLINK_MESSAGES definition ==="
-          grep -rn "^config COMPAT_NETLINK_MESSAGES" common/ || echo "COMPAT_NETLINK_MESSAGES config entry not found"
-
-          echo ""
-          echo "=== Full Kconfig block for WEXT_CORE (20 lines) ==="
-          grep -rn -A 20 "^config WEXT_CORE" common/ || echo "not found"
-
-          echo ""
-          echo "=== What selects these symbols ==="
-          grep -rn "select WEXT_CORE\|select WEXT_PROC\|select COMPAT_NETLINK_MESSAGES" common/ || echo "Nothing selects them"
-
-          echo ""
-          echo "=== CFG80211 Kconfig entry (first 40 lines) ==="
-          grep -A 40 "^config CFG80211$" common/net/wireless/Kconfig || echo "CFG80211 not found"
-
-          echo ""
-          echo "=== Current rpi4 defconfig WiFi-related entries ==="
-          grep -i "wext\|compat_netlink\|cfg80211\|mac80211\|brcm\|wireless" common/arch/arm64/configs/android_rpi4_defconfig || echo "None found"
-
       - name: Download RPi WiFi firmware
         run: |
           cd android-kernel
@@ -71,7 +40,13 @@ jobs:
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
           cp $CONFIG ${CONFIG}.backup
+
+          # Strip any symbols we are about to set so Kleaf sees no reassignments.
+          # NOTE: WEXT_CORE, WEXT_PROC, COMPAT_NETLINK_MESSAGES are hidden symbols
+          # selected automatically by CFG80211 - do NOT put them in the defconfig
+          # or Kleaf's check_config will fail because make defconfig drops them.
           grep -v -E "CONFIG_EXTRA_FIRMWARE|CONFIG_EXTRA_FIRMWARE_DIR|CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_CFG80211|CONFIG_MAC80211|CONFIG_WEXT_CORE|CONFIG_WEXT_PROC|CONFIG_COMPAT_NETLINK_MESSAGES|CONFIG_BRCMUTIL|CONFIG_BRCMFMAC|CONFIG_MMC[^_]|CONFIG_MMC_BCM2835|CONFIG_MMC_SDHCI" ${CONFIG}.backup > $CONFIG
+
           printf '%s\n' \
             'CONFIG_DEBUG_INFO=y' \
             'CONFIG_DEBUG_INFO_DWARF5=y' \
@@ -82,9 +57,6 @@ jobs:
             'CONFIG_BPF=y' \
             'CONFIG_BPF_SYSCALL=y' \
             'CONFIG_BPF_JIT=y' \
-            'CONFIG_COMPAT_NETLINK_MESSAGES=y' \
-            'CONFIG_WEXT_CORE=y' \
-            'CONFIG_WEXT_PROC=y' \
             'CONFIG_CFG80211=y' \
             'CONFIG_MAC80211=y' \
             'CONFIG_BRCMUTIL=y' \
@@ -99,22 +71,82 @@ jobs:
             'CONFIG_EXTRA_FIRMWARE_DIR="firmware"' \
             >> $CONFIG
 
-          echo "=== Verifying lines were written (no leading spaces) ==="
-          grep "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK" $CONFIG
-          echo "=== Raw hex of those lines ==="
-          grep "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK" $CONFIG | xxd
+          echo "=== Final defconfig (last 25 lines) ==="
+          tail -25 $CONFIG
 
       - name: Patch build.config
         run: |
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
 
-      - name: Clear Bazel cache to force config regeneration
-        run: |
-          cd android-kernel
-          tools/bazel clean --expunge || true
-
       - name: Build kernel
         run: |
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
+
+      - name: Find output files
+        run: |
+          cd android-kernel
+          echo "=== Searching for kernel outputs ==="
+          for path in "bazel-bin/common/rpi4/arch/arm64/boot" "bazel-bin/common/rpi4" "out/rpi4/dist" "common/out/rpi4/dist"; do
+            if [ -d "$path" ]; then
+              echo "Found: $path"
+              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
+            fi
+          done
+          echo "=== Broad search ==="
+          find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) -not -path "./.git/*" 2>/dev/null | head -20
+
+      - name: Copy boot files
+        run: |
+          cd android-kernel
+          mkdir -p android-boot-package
+          for path in "bazel-bin/common/rpi4/arch/arm64/boot/Image" "bazel-bin/common/rpi4/arch/arm64/boot/Image.gz" "bazel-bin/common/rpi4/Image"; do
+            if [ -f "$path" ]; then
+              echo "Found kernel image at: $path"
+              cp "$path" android-boot-package/Image
+              break
+            fi
+          done
+          for file in bazel-bin/common/rpi4/ramdisk.img bazel-bin/common/rpi4/ramdisk-recovery.img; do
+            if [ -f "$file" ]; then
+              cp "$file" android-boot-package/
+              echo "Copied: $(basename $file)"
+            fi
+          done
+          for file in bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb bazel-bin/common/rpi4/*.dtb; do
+            if [ -f "$file" ]; then
+              cp "$file" android-boot-package/
+              echo "Copied: $(basename $file)"
+            fi
+          done
+          if [ -z "$(ls -A android-boot-package)" ]; then
+            echo "Trying dist directory..."
+            [ -d "bazel-bin/common/rpi4/dist" ] && cp bazel-bin/common/rpi4/dist/* android-boot-package/ 2>/dev/null || true
+          fi
+          echo "=== Final package contents ==="
+          ls -la android-boot-package/
+
+      - name: Check bazel symlinks
+        if: failure()
+        run: |
+          cd android-kernel
+          if [ -L "bazel-bin" ]; then
+            echo "bazel-bin -> $(readlink bazel-bin)"
+            find "$(readlink -f bazel-bin)" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null
+          fi
+
+      - name: Upload boot package
+        uses: actions/upload-artifact@v4
+        with:
+          name: android-rpi4-boot-files
+          path: android-kernel/android-boot-package/*
+          if-no-files-found: warn
+
+      - name: Upload bazel output for debugging
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-output-debug
+          path: android-kernel/bazel-bin/
+          if-no-files-found: warn
