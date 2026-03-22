@@ -28,70 +28,47 @@ jobs:
       - name: Init kernel repo
         run: |
           mkdir android-kernel
-          cd android-kernel
-
+          cd android极
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android16-6.12-lts
-
           mkdir -p .repo/local_manifests
-          curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml \
-            -o .repo/local_manifests/rpi.xml
-
+          curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-极 -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
 
-      # 4. Download missing WiFi firmware
+      # 4. Download WiFi firmware
       - name: Download WiFi firmware
         run: |
           cd android-kernel
-          
-          # Create firmware directory
           mkdir -p vendor/brcm/rpi4/proprietary/vendor/firmware/brcm
-          
-          # Download RPi4 WiFi firmware
           curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.bin \
-            -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.bin
+            -o vendor/brcm/r极
           curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.clm_blob \
             -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.clm_blob
-          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.txt \
-            -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.txt
-          
-          echo "✓ WiFi firmware downloaded"
+          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcm极 -o vendor/brcm/rpi极
 
-      # 5. Fix the defconfig - REMOVE firmware configs
+      # 5. Fix defconfig
       - name: Fix defconfig
         run: |
           cd android-kernel
-
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
-          
-          # Create backup and remove problematic configs
           cp $CONFIG ${CONFIG}.backup
-          
-          # Remove ALL firmware-related configs to avoid errors
           grep -v "CONFIG_EXTRA_FIRMWARE" ${CONFIG}.backup | \
           grep -v "CONFIG_EXTRA_FIRMWARE_DIR" | \
           grep -v "regulatory.db" > $CONFIG
-          
-          echo "✓ Removed problematic firmware configs"
 
-      # 6. Add BTF and WiFi via build.config (not defconfig)
+      # 6. Configure build options
       - name: Configure build options
         run: |
           cd android-kernel
-          
-          # Clear and rebuild build.config.rpi
-          echo "# BTF configuration" > common/build.config.rpi
-          echo "DEBUG_INFO=1" >> common/build.config.rpi
-          echo "" >> common/build.config.rpi
-          echo "# WiFi/BT configuration via KCONFIG_ADDITIONAL_OPTIONS" >> common/build.config.rpi
+          echo "DEBUG_INFO=1" > common/build.config.rpi
           echo 'KCONFIG_ADDITIONAL_OPTIONS="' >> common/build.config.rpi
           echo 'CONFIG_DEBUG_INFO=y' >> common/build.config.rpi
           echo 'CONFIG_DEBUG_INFO_DWARF5=y' >> common/build.config.rpi
-          echo 'CONFIG_DEBUG_INFO_BTF=y' >> common/build.config.rpi
+          echo '极
           echo 'CONFIG_DEBUG_INFO_NONE=n' >> common/build.config.rpi
           echo 'CONFIG_DEBUG_INFO_REDUCED=n' >> common/build.config.rpi
-          echo 'CONFIG_DEBUG_INFO_SPLIT=n' >> common/build.config.rpi
+          echo 'CONFIG_DEBUG_INFO_SPLIT极
           echo 'CONFIG_BPF=y' >> common/build.config.rpi
-          echo 'CONFIG_BPF_SYSCALL=y' >> common/build.config.rpi
+          echo 'CONFIG_BPF_SYSCALL=y' >> common/build.config极
           echo 'CONFIG_BPF_JIT=y' >> common/build.config.rpi
           echo 'CONFIG_WLAN=y' >> common/build.config.rpi
           echo 'CONFIG_WLAN_VENDOR_BROADCOM=y' >> common/build.config.rpi
@@ -104,8 +81,6 @@ jobs:
           echo 'CONFIG_BT=y' >> common/build.config.rpi
           echo 'CONFIG_BT_BCM=y' >> common/build.config.rpi
           echo '"' >> common/build.config.rpi
-          
-          echo "✓ Configured BTF and WiFi via build.config"
 
       # 7. Build kernel
       - name: Build kernel
@@ -113,40 +88,52 @@ jobs:
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
 
-      # 8. Copy boot files and firmware
-      - name: Copy boot files
+      # 8. Debug: Find all build outputs
+      - name: Find build outputs
         run: |
           cd android-kernel
-          
-          # Create package directory
+          echo "=== Searching for ALL build outputs ==="
+          find . -name "Image" -type f 2>/dev/null | head -10
+          find . -name "*.dtb" -type f 2>/dev/null | head -10
+          find bazel-bin -type f 2>/dev/null | grep -E "(Image|\.dtb|vmlinux)" | head -20
+          echo "=== Bazel output structure ==="
+          ls -la bazel-bin/ 2>/dev/null || echo "bazel-bin not found"
+          ls -la bazel-bin/common/ 2>/dev/null || echo "common not found"
+
+      # 9. Copy ALL possible kernel files
+      - name: Copy kernel files
+        run: |
+          cd android-kernel
           mkdir -p android-boot-package
-          mkdir -p android-boot-package/firmware/brcm
           
-          # Find and copy kernel image
-          KERNEL_IMAGE=$(find bazel-bin -name "Image" -type f 2>/dev/null | head -1)
-          if [ -n "$KERNEL_IMAGE" ]; then
-            cp "$KERNEL_IMAGE" android-boot-package/Image
-            echo "✓ Copied Image"
+          # Search for kernel image in multiple locations
+          KERNEL_PATHS=$(find . -name "Image" -type f 2>/dev/null)
+          if [ -n "$KERNEL_PATHS" ]; then
+            for kernel in $KERNEL_PATHS; do
+              cp "$kernel" android-boot-package/Image
+              echo "✓ Copied Image from: $kernel"
+              break
+            done
+          else
+            echo "✗ No Image file found!"
           fi
           
-          # Find and copy DTB files
-          DTB_FILES=$(find bazel-bin -name "*.dtb" -type f 2>/dev/null)
-          for dtb in $DTB_FILES; do
+          # Copy DTB files
+          find . -name "*.dtb" -type f 2>/dev/null | head -10 | while read dtb; do
             cp "$dtb" android-boot-package/
             echo "✓ Copied $(basename $dtb)"
           done
           
-          # Copy WiFi firmware
+          # Copy firmware
+          mkdir -p android-boot-package/firmware/brcm
           if [ -d "vendor/brcm/rpi4/proprietary/vendor/firmware/brcm" ]; then
-            cp vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/* android-boot-package/firmware/brcm/
-            echo "✓ Copied WiFi firmware"
+            cp vendor/brcm/rpi4/proprietary/vendor极 android-boot-package/firmware/brcm/
           fi
           
-          # Show package contents
-          echo "=== Package contents ==="
-          find android-boot-package -type f | sort
+          echo "=== Final package contents ==="
+          ls -la android-boot-package/
 
-      # 9. Upload boot package
+      # 10. Upload package
       - name: Upload boot package
         uses: actions/upload-artifact@v4
         with:
