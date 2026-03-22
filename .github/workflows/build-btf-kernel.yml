@@ -1,4 +1,4 @@
-name: Build RPi4 Kernel with BTF + WiFi
+name: Build RPi4 Kernel with BTF + WiFi (Diagnostic)
 
 on:
   workflow_dispatch:
@@ -24,6 +24,31 @@ jobs:
           mkdir -p .repo/local_manifests
           curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
+
+      - name: Diagnose Kconfig dependencies
+        run: |
+          cd android-kernel
+
+          echo "=== Checking if WEXT symbols are user-selectable ==="
+          grep -n "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK_MESSAGES" common/net/wireless/Kconfig || echo "Not found in wireless/Kconfig"
+          grep -rn "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK_MESSAGES" common/net/Kconfig || echo "Not found in net/Kconfig"
+          grep -rn "config WEXT_CORE\|config WEXT_PROC\|config COMPAT_NETLINK_MESSAGES" common/ || echo "Kconfig entries not found"
+
+          echo ""
+          echo "=== What selects WEXT_CORE ==="
+          grep -rn "select WEXT_CORE\|depends.*WEXT_CORE" common/ || echo "Nothing selects WEXT_CORE"
+
+          echo ""
+          echo "=== What selects COMPAT_NETLINK_MESSAGES ==="
+          grep -rn "select COMPAT_NETLINK_MESSAGES\|depends.*COMPAT_NETLINK_MESSAGES" common/ || echo "Nothing selects COMPAT_NETLINK_MESSAGES"
+
+          echo ""
+          echo "=== CFG80211 Kconfig entry ==="
+          grep -A 30 "^config CFG80211$" common/net/wireless/Kconfig || echo "CFG80211 not found"
+
+          echo ""
+          echo "=== Current rpi4 defconfig WEXT/COMPAT entries ==="
+          grep -i "wext\|compat_netlink\|cfg80211\|mac80211\|brcm" common/arch/arm64/configs/android_rpi4_defconfig || echo "None found"
 
       - name: Download RPi WiFi firmware
         run: |
@@ -67,6 +92,11 @@ jobs:
             'CONFIG_EXTRA_FIRMWARE="brcm/brcmfmac43455-sdio.bin brcm/brcmfmac43455-sdio.clm_blob brcm/brcmfmac43455-sdio.txt"' \
             'CONFIG_EXTRA_FIRMWARE_DIR="firmware"' \
             >> $CONFIG
+
+          echo "=== Verifying lines were written correctly (grep check) ==="
+          grep "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK" $CONFIG
+          echo "=== Raw hex of last 5 lines to check for hidden characters ==="
+          tail -5 $CONFIG | xxd | head -20
           echo "=== Final defconfig (last 30 lines) ==="
           tail -30 $CONFIG
 
@@ -79,70 +109,3 @@ jobs:
         run: |
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
-
-      - name: Find output files
-        run: |
-          cd android-kernel
-          echo "=== Searching for kernel outputs ==="
-          for path in "bazel-bin/common/rpi4/arch/arm64/boot" "bazel-bin/common/rpi4" "out/rpi4/dist" "common/out/rpi4/dist"; do
-            if [ -d "$path" ]; then
-              echo "Found: $path"
-              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
-            fi
-          done
-          echo "=== Broad search ==="
-          find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) -not -path "./.git/*" 2>/dev/null | head -20
-
-      - name: Copy boot files
-        run: |
-          cd android-kernel
-          mkdir -p android-boot-package
-          for path in "bazel-bin/common/rpi4/arch/arm64/boot/Image" "bazel-bin/common/rpi4/arch/arm64/boot/Image.gz" "bazel-bin/common/rpi4/Image"; do
-            if [ -f "$path" ]; then
-              echo "Found kernel image at: $path"
-              cp "$path" android-boot-package/Image
-              break
-            fi
-          done
-          for file in bazel-bin/common/rpi4/ramdisk.img bazel-bin/common/rpi4/ramdisk-recovery.img; do
-            if [ -f "$file" ]; then
-              cp "$file" android-boot-package/
-              echo "Copied: $(basename $file)"
-            fi
-          done
-          for file in bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb bazel-bin/common/rpi4/*.dtb; do
-            if [ -f "$file" ]; then
-              cp "$file" android-boot-package/
-              echo "Copied: $(basename $file)"
-            fi
-          done
-          if [ -z "$(ls -A android-boot-package)" ]; then
-            echo "Trying dist directory..."
-            [ -d "bazel-bin/common/rpi4/dist" ] && cp bazel-bin/common/rpi4/dist/* android-boot-package/ 2>/dev/null || true
-          fi
-          echo "=== Final package contents ==="
-          ls -la android-boot-package/
-
-      - name: Check bazel symlinks
-        if: failure()
-        run: |
-          cd android-kernel
-          if [ -L "bazel-bin" ]; then
-            echo "bazel-bin -> $(readlink bazel-bin)"
-            find "$(readlink -f bazel-bin)" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null
-          fi
-
-      - name: Upload boot package
-        uses: actions/upload-artifact@v4
-        with:
-          name: android-rpi4-boot-files
-          path: android-kernel/android-boot-package/*
-          if-no-files-found: warn
-
-      - name: Upload bazel output for debugging
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: bazel-output-debug
-          path: android-kernel/bazel-bin/
-          if-no-files-found: warn
