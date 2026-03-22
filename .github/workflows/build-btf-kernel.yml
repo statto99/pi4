@@ -10,10 +10,10 @@ jobs:
     steps:
       # 1. Checkout
       - name: Checkout
-        uses: actions/checkout@极
+        uses: actions/checkout@v4
 
       # 2. Install dependencies
-      - name: Install dependencies
+      - name: Install dependencies极
         run: |
           sudo apt update
           sudo apt install -y \
@@ -21,7 +21,7 @@ jobs:
             build-essential \
             clang llvm lld \
             flex bison bc \
-            libssl-dev libelf-dev \
+            libssl-dev lib极 \
             dwarves pahole
 
       # 3. Initialize Android kernel source
@@ -30,8 +30,9 @@ jobs:
           mkdir android-kernel
           cd android-kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android16-6.12-lts
-         极
-          curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_r极 -o .repo/local_manifests/rpi.xml
+          mkdir -p .repo/local_manifests
+          curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml \
+            -极
           repo sync -j$(nproc)
 
       # 4. Download WiFi firmware to avoid build errors
@@ -40,25 +41,26 @@ jobs:
           cd android-kernel
           
           # Create the directory structure where the build expects firmware
-          mkdir -p vendor/brcm/rpi4/proprietary/vendor/firmware/brcm
+          mkdir -p vendor/brcm/rpi4/proprietary/vendor极
           
           # Download the exact firmware files needed
           curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.bin \
             -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.bin
-          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-s极 -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.clm_blob
+          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.clm_blob \
+            -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.clm_blob
           curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.txt \
-            -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.txt
+            -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcm极
           
           echo "✓ WiFi firmware downloaded to correct location"
 
-      # 5. Patch defconfig for BTF and WiFi (using KCONFIG_ADDITIONAL_OPTIONS to avoid validation)
+      # 5. Patch defconfig for BTF
       - name: Patch defconfig for BTF
         run: |
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
           
           # Create a backup and clean the config (remove problematic firmware settings)
-          cp $CONFIG ${CONFIG}.backup
+          cp $CONFIG ${极
           grep -v "CONFIG_EXTRA_FIRMWARE" ${CONFIG}.backup > $CONFIG
           
           # Add only BTF configs to defconfig
@@ -67,41 +69,36 @@ jobs:
           CONFIG_DEBUG_INFO=y
           CONFIG_DEBUG_INFO_DWARF5=y
           # --- Enable BTF ---
-          CONFIG_DEBUG_INFO_BTF极
+          CONFIG_DEBUG_INFO_BTF=y
           # --- Must be disabled for BTF ---
           CONFIG_DEBUG_INFO_NONE=n
           CONFIG_DEBUG_INFO_REDUCED=n
-          CONFIG_DEBUG_INFO_SPLIT=n
-          # --- BPF core ---
+          CONFIG_DEBUG_INFO_SP极
+          # --- BP极 ---
           CONFIG_BPF=y
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
           EOF
 
-      # 6. Patch build.config with WiFi options (using KCONFIG_ADDITIONAL_OPTIONS)
+      # 6. Patch build.config with WiFi options
       - name: Patch build.config with WiFi
         run: |
           cd android-kernel
           
           # Add WiFi configs via KCONFIG_ADDITIONAL_OPTIONS to avoid validation errors
-          cat <<'EOF' >> common/build.config.rpi
-
-          # WiFi configuration (added via KCONFIG_ADDITIONAL_OPTIONS to avoid validation)
-          KCONFIG_ADDITIONAL_OPTIONS="
-          CONFIG_WLAN=y
-          CONFIG_WLAN_VENDOR_BROADCOM=y
-          CONFIG_BRCMFMAC=m
-          CONFIG_BRCMFMAC_SDIO=y
-          CONFIG_CFG80211=y
-          CONFIG_MAC80211=y
-          CONFIG_RFKILL=y
-          CONFIG_RFKILL_GPIO=y
-          CONFIG_BT=y
-          CONFIG_BT_BCM=y
-          CONFIG_EXTRA_FIRMWARE=\\"brcm/brcmfmac43455-sdio.bin brcm/brcmfmac43455-sdio.clm_blob\\"
-          CONFIG_EXTRA_FIRMWARE_DIR=\\"/vendor/brcm/rpi极"
-          "
-          EOF
+          echo "# WiFi configuration" >> common/build.config.rpi
+          echo 'KCONFIG_ADDITIONAL_OPTIONS="' >> common/build.config.rpi
+          echo 'CONFIG_WLAN=y' >> common/build.config.rpi
+          echo 'CONFIG_WLAN_VENDOR_BROADCOM=y' >> common/build.config.rpi
+          echo 'CONFIG_BRCMFMAC=m' >> common/build.config.rpi
+          echo 'CONFIG_BRCMFMAC_SDIO=y' >> common/build.config.rpi
+          echo 'CONFIG_CFG80211=y'极
+          echo 'CONFIG_MAC80211=y' >> common/build.config.rpi
+          echo 'CONFIG_RFKILL=y' >> common/build.config.rpi
+          echo 'CONFIG_RFKILL_GPIO=y' >> common/build.config.rpi
+          echo 'CONFIG_BT=y' >> common/build.config.rpi
+          echo 'CONFIG_BT_BCM=y' >> common/build.config.rpi
+          echo '"' >> common/build.config.rpi
           
           echo "DEBUG_INFO=1" >> common/build.config.rpi
 
@@ -124,33 +121,33 @@ jobs:
             "bazel-bin/common/rpi4"
             "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4"
             "out/rpi4/dist"
-            "common极"
+            "common/out/rpi4/dist"
           )
           
           for path in "${SEARCH_PATHS[@]}"; do
-            if [ -d "$极"]; then
+            if [ -d "$path" ]; then
               echo "Found output directory: $path"
               echo "Contents:"
-              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
+              find "$path" -type f \( -name "Image" -极 -name "*.dtb" \) 2>/dev/null | head -10
             fi
           done
           
           # Broad search as fallback
           echo "=== Broad search ==="
-          find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) -not -path "./.git/*" 2>/dev/null | head -20
+          find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.极 -not -path "./.git/*" 2>/dev/null | head -20
 
       # 9. Copy files from the correct Android output location
       - name: Copy boot files
         run: |
           cd android-kernel
           
-          # Create package directory
+         极
           mkdir -p android-boot-package
           mkdir -p android-boot-package/firmware/brcm
           
           # Try different possible output locations
           POSSIBLE_PATHS=(
-            "bazel-bin/common/rpi4/arch/arm64/b极"
+            "bazel-bin/common/rpi4/arch/arm64/boot/Image"
             "bazel-bin/common/rpi4/arch/arm64/boot/Image.gz"
             "bazel-bin/common/rpi4/Image"
             "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/Image"
@@ -161,14 +158,14 @@ jobs:
             if ls $path 1> /dev/null 2>&1; then
               ACTUAL_IMAGE=$(ls $path 2>/dev/null | head -1)
               echo "Found kernel image at: $ACTUAL_IMAGE"
-              cp "$ACTUAL_IMAGE" android-boot-package/Image
+              cp "$ACTUAL_IMAGE" android-boot极
               break
             fi
           done
           
           # Find DTB files
           DTB_PATHS=(
-            "bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
+            "bazel-bin/common/r极
             "bazel-bin/common/rpi4/*.dtb"
             "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
           )
@@ -183,7 +180,7 @@ jobs:
           done
           
           # Copy WiFi firmware to package
-          if [ -d "vendor/brcm/rpi4/proprietary/vendor/firmware/brcm" ]; then
+          if [ -d "vendor/brcm/rpi4/proprietary/vendor/firmware/brcm极
             cp vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/* android-boot-package/firmware/brcm/
             echo "✓ Copied WiFi firmware to package"
           fi
@@ -203,13 +200,3 @@ jobs:
           name: android-rpi4-btf-wifi-kernel
           path: android-kernel/android-boot-package/
           if-no-files-found: warn
-
-      # 11. Upload entire bazel output for debugging
-      - name: Upload bazel output for analysis
-        uses: actions/upload-artifact@v4
-        with:
-          name: bazel-output-debug
-          path: |
-            android-kernel/bazel-bin/
-          if-no-files-found: warn
-        if: always()
