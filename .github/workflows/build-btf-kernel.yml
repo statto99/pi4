@@ -1,4 +1,4 @@
-name: Build RPi4 Kernel with BTF (WiFi Fixed)
+name: Build RPi4 Kernel with BTF and WiFi
 
 on:
   workflow_dispatch:
@@ -38,16 +38,26 @@ jobs:
 
           repo sync -j$(nproc)
 
-      # 4. FIRST check what's already in the config
-      - name: Check existing config
+      # 4. Download missing WiFi firmware for RPi4
+      - name: Download WiFi firmware
         run: |
           cd android-kernel
-          CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
-          echo "=== Checking existing WiFi/BT config ==="
-          grep -E "(BRCM|WLAN|BT|MAC80211|FW_LOADER)" $CONFIG || true
+          
+          # Create firmware directory structure
+          mkdir -p vendor/brcm/rpi4/proprietary/vendor/firmware/brcm
+          
+          # Download RPi4 specific WiFi firmware
+          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.bin \
+            -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.bin
+          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.clm_blob \
+            -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.clm_blob
+          curl -L https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/brcm/brcmfmac43455-sdio.txt \
+            -o vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/brcmfmac43455-sdio.txt
+          
+          echo "✓ WiFi firmware downloaded"
 
-      # 5. Patch defconfig CORRECTLY - only add what's missing
-      - name: Patch defconfig for BTF
+      # 5. Patch defconfig for BTF and WiFi
+      - name: Patch defconfig
         run: |
           cd android-kernel
 
@@ -56,12 +66,11 @@ jobs:
           # Create a backup
           cp $CONFIG ${CONFIG}.backup
           
-          # Remove any lines we're going to add (to avoid duplicates)
-          grep -v "CONFIG_DEBUG_INFO" ${CONFIG}.backup | \
-          grep -v "CONFIG_BPF" | \
-          grep -v "CONFIG_DEBUG_INFO_BTF" > $CONFIG
+          # Remove existing firmware config to avoid conflicts
+          grep -v "CONFIG_EXTRA_FIRMWARE" ${CONFIG}.backup > $CONFIG
+          grep -v "CONFIG_EXTRA_FIRMWARE_DIR" $CONFIG > temp_config && mv temp_config $CONFIG
           
-          # Add ONLY BTF and essential configs
+          # Add BTF and WiFi configuration
           cat <<EOF >> $CONFIG
 
           # --- Enable debug info (required for BTF) ---
@@ -81,88 +90,77 @@ jobs:
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
 
-          EOF
-
-      # 6. Add WiFi/BT configs via KCONFIG_ADDITIONAL_OPTIONS (safer)
-      - name: Add WiFi configs via build.config
-        run: |
-          cd android-kernel
-          
-          # Add to build.config.rpi
-          cat <<EOF >> common/build.config.rpi
-
-          # WiFi/Bluetooth for RPi4
-          KCONFIG_ADDITIONAL_OPTIONS="
+          # --- WiFi drivers for RPi4 ---
           CONFIG_WLAN=y
           CONFIG_WLAN_VENDOR_BROADCOM=y
-          CONFIG_BRCMUTIL=y
           CONFIG_BRCMFMAC=m
           CONFIG_BRCMFMAC_SDIO=y
           CONFIG_BRCMFMAC_PROTO_BCDC=y
           CONFIG_BRCMFMAC_PROTO_MSGBUF=y
-          CONFIG_BRCM_TRACING=y
-          CONFIG_BRCMDBG=y
           CONFIG_CFG80211=y
           CONFIG_MAC80211=y
-          CONFIG_MAC80211_RC_MINSTREL=y
-          CONFIG_MAC80211_RC_MINSTREL_HT=y
-          CONFIG_MAC80211_RC_MINSTREL_VHT=y
-          CONFIG_MAC80211_MESH=y
           CONFIG_RFKILL=y
           CONFIG_RFKILL_GPIO=y
+
+          # --- Bluetooth (same chip) ---
           CONFIG_BT=y
-          CONFIG_BT_BREDR=y
-          CONFIG_BT_LE=y
           CONFIG_BT_BCM=y
           CONFIG_BT_HCIUART=y
-          CONFIG_BT_HCIUART_BCM=y
-          CONFIG_FW_LOADER=y
-          CONFIG_FW_LOADER_USER_HELPER=y
-          CONFIG_FW_LOADER_USER_HELPER_FALLBACK=y
-          "
+
+          # --- Firmware loading ---
+          CONFIG_EXTRA_FIRMWARE="brcm/brcmfmac43455-sdio.bin brcm/brcmfmac43455-sdio.clm_blob"
+          CONFIG_EXTRA_FIRMWARE_DIR="/vendor/brcm/rpi4/proprietary/vendor/firmware"
+
           EOF
 
-      # 7. Ensure debug info is enabled
-      - name: Enable debug info
+      # 6. Ensure Android build system keeps debug info
+      - name: Patch build.config
         run: |
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
 
-      # 8. Build kernel
+      # 7. Build kernel
       - name: Build kernel
         run: |
           cd android-kernel
-          tools/bazel build //common:rpi4 --verbose_failures
+          tools/bazel build //common:rpi4
 
-      # 9. Copy boot files
-      - name: Copy boot files
+      # 8. Copy boot files and firmware
+      - name: Copy boot files and firmware
         run: |
           cd android-kernel
           
           # Create package directory
           mkdir -p android-boot-package
+          mkdir -p android-boot-package/firmware/brcm
           
-          # Find kernel image
+          # Find and copy kernel image
           KERNEL_IMAGE=$(find bazel-bin -name "Image" -type f 2>/dev/null | head -1)
           if [ -n "$KERNEL_IMAGE" ]; then
             cp "$KERNEL_IMAGE" android-boot-package/Image
             echo "✓ Copied Image"
           fi
           
-          # Find DTB files
+          # Find and copy DTB files
           DTB_FILES=$(find bazel-bin -name "*.dtb" -type f 2>/dev/null)
           for dtb in $DTB_FILES; do
             cp "$dtb" android-boot-package/
             echo "✓ Copied $(basename $dtb)"
           done
           
+          # Copy WiFi firmware
+          if [ -d "vendor/brcm/rpi4/proprietary/vendor/firmware/brcm" ]; then
+            cp vendor/brcm/rpi4/proprietary/vendor/firmware/brcm/* android-boot-package/firmware/brcm/
+            echo "✓ Copied WiFi firmware"
+          fi
+          
           # Show package contents
           echo "=== Package contents ==="
-          ls -la android-boot-package/
+          find android-boot-package -type f | sort
 
-      # 10. Upload boot package
+      # 9. Upload boot package
       - name: Upload boot package
         uses: actions/upload-artifact@v4
         with:
-          name: android-rpi4-btf-kernel
+          name: android-rpi4-btf-wifi-kernel
           path: android-kernel/android-boot-package/
