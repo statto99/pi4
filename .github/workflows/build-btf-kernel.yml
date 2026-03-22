@@ -29,26 +29,32 @@ jobs:
         run: |
           cd android-kernel
 
-          echo "=== Checking if WEXT symbols are user-selectable ==="
-          grep -n "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK_MESSAGES" common/net/wireless/Kconfig || echo "Not found in wireless/Kconfig"
-          grep -rn "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK_MESSAGES" common/net/Kconfig || echo "Not found in net/Kconfig"
-          grep -rn "config WEXT_CORE\|config WEXT_PROC\|config COMPAT_NETLINK_MESSAGES" common/ || echo "Kconfig entries not found"
+          echo "=== config WEXT_CORE definition ==="
+          grep -rn "^config WEXT_CORE" common/ || echo "WEXT_CORE config entry not found"
 
           echo ""
-          echo "=== What selects WEXT_CORE ==="
-          grep -rn "select WEXT_CORE\|depends.*WEXT_CORE" common/ || echo "Nothing selects WEXT_CORE"
+          echo "=== config WEXT_PROC definition ==="
+          grep -rn "^config WEXT_PROC" common/ || echo "WEXT_PROC config entry not found"
 
           echo ""
-          echo "=== What selects COMPAT_NETLINK_MESSAGES ==="
-          grep -rn "select COMPAT_NETLINK_MESSAGES\|depends.*COMPAT_NETLINK_MESSAGES" common/ || echo "Nothing selects COMPAT_NETLINK_MESSAGES"
+          echo "=== config COMPAT_NETLINK_MESSAGES definition ==="
+          grep -rn "^config COMPAT_NETLINK_MESSAGES" common/ || echo "COMPAT_NETLINK_MESSAGES config entry not found"
 
           echo ""
-          echo "=== CFG80211 Kconfig entry ==="
-          grep -A 30 "^config CFG80211$" common/net/wireless/Kconfig || echo "CFG80211 not found"
+          echo "=== Full Kconfig block for WEXT_CORE (20 lines) ==="
+          grep -rn -A 20 "^config WEXT_CORE" common/ || echo "not found"
 
           echo ""
-          echo "=== Current rpi4 defconfig WEXT/COMPAT entries ==="
-          grep -i "wext\|compat_netlink\|cfg80211\|mac80211\|brcm" common/arch/arm64/configs/android_rpi4_defconfig || echo "None found"
+          echo "=== What selects these symbols ==="
+          grep -rn "select WEXT_CORE\|select WEXT_PROC\|select COMPAT_NETLINK_MESSAGES" common/ || echo "Nothing selects them"
+
+          echo ""
+          echo "=== CFG80211 Kconfig entry (first 40 lines) ==="
+          grep -A 40 "^config CFG80211$" common/net/wireless/Kconfig || echo "CFG80211 not found"
+
+          echo ""
+          echo "=== Current rpi4 defconfig WiFi-related entries ==="
+          grep -i "wext\|compat_netlink\|cfg80211\|mac80211\|brcm\|wireless" common/arch/arm64/configs/android_rpi4_defconfig || echo "None found"
 
       - name: Download RPi WiFi firmware
         run: |
@@ -93,17 +99,20 @@ jobs:
             'CONFIG_EXTRA_FIRMWARE_DIR="firmware"' \
             >> $CONFIG
 
-          echo "=== Verifying lines were written correctly (grep check) ==="
+          echo "=== Verifying lines were written (no leading spaces) ==="
           grep "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK" $CONFIG
-          echo "=== Raw hex of last 5 lines to check for hidden characters ==="
-          tail -5 $CONFIG | xxd | head -20
-          echo "=== Final defconfig (last 30 lines) ==="
-          tail -30 $CONFIG
+          echo "=== Raw hex of those lines ==="
+          grep "WEXT_CORE\|WEXT_PROC\|COMPAT_NETLINK" $CONFIG | xxd
 
       - name: Patch build.config
         run: |
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
+
+      - name: Clear Bazel cache to force config regeneration
+        run: |
+          cd android-kernel
+          tools/bazel clean --expunge || true
 
       - name: Build kernel
         run: |
