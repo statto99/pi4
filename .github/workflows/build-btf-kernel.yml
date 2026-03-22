@@ -36,7 +36,7 @@ jobs:
             -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
 
-      # 4. Download RPi firmware blobs
+      # 4. Download RPi WiFi firmware
       - name: Download RPi WiFi firmware
         run: |
           cd android-kernel
@@ -46,14 +46,11 @@ jobs:
           BASE="https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/debian/config/brcm80211/brcm"
 
           for f in \
-            brcmfmac43455-sdio.bin \
-            brcmfmac43455-sdio.clm_blob \
-            brcmfmac43455-sdio.txt \
-            brcmfmac43455-sdio.Raspberry\ Pi\ Foundation-Raspberry\ Pi\ 4\ Model\ B.txt; do
+            "brcmfmac43455-sdio.bin" \
+            "brcmfmac43455-sdio.clm_blob" \
+            "brcmfmac43455-sdio.txt"; do
             echo "Downloading: $f"
-            wget -q --show-progress -O "$FIRMWARE_DIR/brcm/$f" "$BASE/$(python3 -c "import urllib.parse; print(urllib.parse.quote('$f'))")" || \
-            wget -q -O "$FIRMWARE_DIR/brcm/$f" "$BASE/$f" || \
-            echo "Warning: could not download $f"
+            wget -q -O "$FIRMWARE_DIR/brcm/$f" "$BASE/$f" || echo "Warning: could not download $f"
           done
 
           echo "=== Firmware files ==="
@@ -67,17 +64,21 @@ jobs:
 
           cp $CONFIG ${CONFIG}.backup
 
-          # Strip CONFIG_EXTRA_FIRMWARE lines so we can replace them cleanly
-          # (do NOT drop them entirely — we're going to re-add them correctly)
-          grep -v "CONFIG_EXTRA_FIRMWARE\|CONFIG_EXTRA_FIRMWARE_DIR" ${CONFIG}.backup > $CONFIG
+          grep -v -E \
+            "CONFIG_EXTRA_FIRMWARE|CONFIG_EXTRA_FIRMWARE_DIR|\
+          CONFIG_DEBUG_INFO |CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|\
+          CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|\
+          CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|\
+          CONFIG_CFG80211|CONFIG_MAC80211|\
+          CONFIG_BRCMUTIL|CONFIG_BRCMFMAC|\
+          CONFIG_MMC[^_]|CONFIG_MMC_BCM2835|CONFIG_MMC_SDHCI" \
+            ${CONFIG}.backup > $CONFIG
 
-          cat <<'EOF' >> $CONFIG
-          # --- Enable debug info (required for BTF) ---
+          cat >> $CONFIG << 'DEFCONFIG_EOF'
+          # --- Debug info (required for BTF) ---
           CONFIG_DEBUG_INFO=y
           CONFIG_DEBUG_INFO_DWARF5=y
-          # --- Enable BTF ---
           CONFIG_DEBUG_INFO_BTF=y
-          # --- Must be disabled for BTF ---
           CONFIG_DEBUG_INFO_NONE=n
           CONFIG_DEBUG_INFO_REDUCED=n
           CONFIG_DEBUG_INFO_SPLIT=n
@@ -85,23 +86,23 @@ jobs:
           CONFIG_BPF=y
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
-          # --- WiFi: Broadcom brcmfmac (RPi4 internal WiFi) ---
+          # --- 802.11 stack ---
           CONFIG_CFG80211=y
           CONFIG_MAC80211=y
+          # --- Broadcom brcmfmac (RPi4 SDIO WiFi) ---
           CONFIG_BRCMUTIL=y
           CONFIG_BRCMFMAC=y
           CONFIG_BRCMFMAC_SDIO=y
           CONFIG_BRCMFMAC_PROTO_BCDC=y
-          CONFIG_BRCMFMAC_PROTO_MSGBUF=y
-          # --- MMC/SDIO (needed for brcmfmac SDIO) ---
+          # --- MMC/SDIO bus ---
           CONFIG_MMC=y
           CONFIG_MMC_BCM2835=y
           CONFIG_MMC_SDHCI=y
           CONFIG_MMC_SDHCI_PLTFM=y
-          # --- Embed firmware blobs into the kernel ---
+          # --- Embed firmware blobs ---
           CONFIG_EXTRA_FIRMWARE="brcm/brcmfmac43455-sdio.bin brcm/brcmfmac43455-sdio.clm_blob brcm/brcmfmac43455-sdio.txt"
           CONFIG_EXTRA_FIRMWARE_DIR="firmware"
-          EOF
+          DEFCONFIG_EOF
 
           echo "=== Final defconfig (last 40 lines) ==="
           tail -40 $CONFIG
@@ -118,7 +119,7 @@ jobs:
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
 
-      # 8. Find the actual output directory
+      # 8. Find output files
       - name: Find output files
         run: |
           cd android-kernel
