@@ -56,43 +56,39 @@ jobs:
           
           echo "✓ WiFi firmware downloaded"
 
-      # 5. Patch defconfig for BTF and WiFi
-      - name: Patch defconfig
+      # 5. FIRST check what's in the original config to avoid conflicts
+      - name: Check original config values
         run: |
           cd android-kernel
-
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
-          
-          # Create a backup
-          cp $CONFIG ${CONFIG}.backup
-          
-          # Remove existing firmware config to avoid conflicts
-          grep -v "CONFIG_EXTRA_FIRMWARE" ${CONFIG}.backup > $CONFIG
-          grep -v "CONFIG_EXTRA_FIRMWARE_DIR" $CONFIG > temp_config && mv temp_config $CONFIG
-          
-          # Add BTF and WiFi configuration
-          cat <<EOF >> $CONFIG
+          echo "=== Current WiFi/BT config values ==="
+          grep -E "(BRCMUTIL|BRCMFMAC_PROTO_MSGBUF|WLAN|BT)" $CONFIG || true
 
-          # --- Enable debug info (required for BTF) ---
+      # 6. Patch defconfig using KCONFIG_ADDITIONAL_OPTIONS (avoids validation errors)
+      - name: Patch build.config with WiFi options
+        run: |
+          cd android-kernel
+          
+          # Use KCONFIG_ADDITIONAL_OPTIONS to avoid config validation issues
+          cat <<EOF >> common/build.config.rpi
+
+          # BTF configuration
+          DEBUG_INFO=1
+          
+          # WiFi configuration (added via KCONFIG_ADDITIONAL_OPTIONS to avoid validation)
+          KCONFIG_ADDITIONAL_OPTIONS="
           CONFIG_DEBUG_INFO=y
           CONFIG_DEBUG_INFO_DWARF5=y
-
-          # --- Enable BTF ---
           CONFIG_DEBUG_INFO_BTF=y
-
-          # --- Must be disabled for BTF ---
           CONFIG_DEBUG_INFO_NONE=n
           CONFIG_DEBUG_INFO_REDUCED=n
           CONFIG_DEBUG_INFO_SPLIT=n
-
-          # --- BPF core ---
           CONFIG_BPF=y
           CONFIG_BPF_SYSCALL=y
           CONFIG_BPF_JIT=y
-
-          # --- WiFi drivers for RPi4 ---
           CONFIG_WLAN=y
           CONFIG_WLAN_VENDOR_BROADCOM=y
+          CONFIG_BRCMUTIL=y
           CONFIG_BRCMFMAC=m
           CONFIG_BRCMFMAC_SDIO=y
           CONFIG_BRCMFMAC_PROTO_BCDC=y
@@ -101,29 +97,19 @@ jobs:
           CONFIG_MAC80211=y
           CONFIG_RFKILL=y
           CONFIG_RFKILL_GPIO=y
-
-          # --- Bluetooth (same chip) ---
           CONFIG_BT=y
           CONFIG_BT_BCM=y
           CONFIG_BT_HCIUART=y
-
-          # --- Firmware loading ---
-          CONFIG_EXTRA_FIRMWARE="brcm/brcmfmac43455-sdio.bin brcm/brcmfmac43455-sdio.clm_blob"
-          CONFIG_EXTRA_FIRMWARE_DIR="/vendor/brcm/rpi4/proprietary/vendor/firmware"
-
+          CONFIG_EXTRA_FIRMWARE=\\"brcm/brcmfmac43455-sdio.bin brcm/brcmfmac43455-sdio.clm_blob\\"
+          CONFIG_EXTRA_FIRMWARE_DIR=\\"/vendor/brcm/rpi4/proprietary/vendor/firmware\\"
+          "
           EOF
-
-      # 6. Ensure Android build system keeps debug info
-      - name: Patch build.config
-        run: |
-          cd android-kernel
-          echo "DEBUG_INFO=1" >> common/build.config.rpi || true
 
       # 7. Build kernel
       - name: Build kernel
         run: |
           cd android-kernel
-          tools/bazel build //common:rpi4
+          tools/bazel build //common:rpi4 --verbose_failures
 
       # 8. Copy boot files and firmware
       - name: Copy boot files and firmware
