@@ -35,17 +35,13 @@ jobs:
           wget -q -O common/firmware/brcm/brcmfmac43455-sdio.txt "$BASE/brcmfmac43455-sdio.txt" || echo "Warning: could not download brcmfmac43455-sdio.txt"
           ls -la common/firmware/brcm/
 
-      - name: Patch defconfig for BTF + WiFi
+      - name: Patch defconfig for BTF + WiFi + uprobes
         run: |
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
           cp $CONFIG ${CONFIG}.backup
 
-          # Strip any symbols we are about to set so Kleaf sees no reassignments.
-          # NOTE: WEXT_CORE, WEXT_PROC, COMPAT_NETLINK_MESSAGES are hidden symbols
-          # selected automatically by CFG80211 - do NOT put them in the defconfig
-          # or Kleaf's check_config will fail because make defconfig drops them.
-          grep -v -E "CONFIG_EXTRA_FIRMWARE|CONFIG_EXTRA_FIRMWARE_DIR|CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_CFG80211|CONFIG_MAC80211|CONFIG_WEXT_CORE|CONFIG_WEXT_PROC|CONFIG_COMPAT_NETLINK_MESSAGES|CONFIG_BRCMUTIL|CONFIG_BRCMFMAC|CONFIG_MMC[^_]|CONFIG_MMC_BCM2835|CONFIG_MMC_SDHCI" ${CONFIG}.backup > $CONFIG
+          grep -v -E "CONFIG_EXTRA_FIRMWARE|CONFIG_EXTRA_FIRMWARE_DIR|CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_CFG80211|CONFIG_MAC80211|CONFIG_WEXT_CORE|CONFIG_WEXT_PROC|CONFIG_COMPAT_NETLINK_MESSAGES|CONFIG_BRCMUTIL|CONFIG_BRCMFMAC|CONFIG_MMC[^_]|CONFIG_MMC_BCM2835|CONFIG_MMC_SDHCI|CONFIG_UPROBE_EVENTS|CONFIG_KPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_HAVE_KPROBES|CONFIG_KPROBES[^_]|CONFIG_KPROBES_ON_FTRACE|CONFIG_UPROBES|CONFIG_GENERIC_TRACER|CONFIG_TRACING" ${CONFIG}.backup > $CONFIG
 
           printf '%s\n' \
             'CONFIG_DEBUG_INFO=y' \
@@ -57,6 +53,17 @@ jobs:
             'CONFIG_BPF=y' \
             'CONFIG_BPF_SYSCALL=y' \
             'CONFIG_BPF_JIT=y' \
+            'CONFIG_KPROBES=y' \
+            'CONFIG_KPROBE_EVENTS=y' \
+            'CONFIG_UPROBES=y' \
+            'CONFIG_UPROBE_EVENTS=y' \
+            'CONFIG_PERF_EVENTS=y' \
+            'CONFIG_FTRACE=y' \
+            'CONFIG_DYNAMIC_FTRACE=y' \
+            'CONFIG_FUNCTION_TRACER=y' \
+            'CONFIG_KPROBES_ON_FTRACE=y' \
+            'CONFIG_GENERIC_TRACER=y' \
+            'CONFIG_TRACING=y' \
             'CONFIG_CFG80211=y' \
             'CONFIG_MAC80211=y' \
             'CONFIG_BRCMUTIL=y' \
@@ -71,9 +78,9 @@ jobs:
             'CONFIG_EXTRA_FIRMWARE_DIR="firmware"' \
             >> $CONFIG
 
-          echo "=== Final defconfig (last 25 lines) ==="
-          tail -25 $CONFIG
-
+          echo "=== Final defconfig (last 35 lines) ==="
+          tail -35 $CONFIG
+          
       - name: Patch build.config
         run: |
           cd android-kernel
