@@ -1,4 +1,4 @@
-name: Build RPi4 Kernel with BTF + WiFi
+name: Build RPi4 Kernel with BTF
 
 on:
   workflow_dispatch:
@@ -8,140 +8,179 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
+      # 1. Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
+      # 2. Install dependencies
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y repo git curl build-essential clang llvm lld flex bison bc libssl-dev libelf-dev dwarves pahole wget
-
+          sudo apt install -y \
+            repo git curl \
+            build-essential \
+            clang llvm lld \
+            flex bison bc \
+            libssl-dev libelf-dev \
+            dwarves pahole
+      # 3. Initialize Android kernel source
       - name: Init kernel repo
         run: |
           mkdir android-kernel
           cd android-kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android16-6.12-lts
           mkdir -p .repo/local_manifests
-          curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml -o .repo/local_manifests/rpi.xml
+          curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml \
+            -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
-
-      - name: Download RPi WiFi firmware
-        run: |
-          cd android-kernel
-          mkdir -p common/firmware/brcm
-          BASE="https://raw.githubusercontent.com/RPi-Distro/firmware-nonfree/master/debian/config/brcm80211/brcm"
-          wget -q -O common/firmware/brcm/brcmfmac43455-sdio.bin "$BASE/brcmfmac43455-sdio.bin" || echo "Warning: could not download brcmfmac43455-sdio.bin"
-          wget -q -O common/firmware/brcm/brcmfmac43455-sdio.clm_blob "$BASE/brcmfmac43455-sdio.clm_blob" || echo "Warning: could not download brcmfmac43455-sdio.clm_blob"
-          wget -q -O common/firmware/brcm/brcmfmac43455-sdio.txt "$BASE/brcmfmac43455-sdio.txt" || echo "Warning: could not download brcmfmac43455-sdio.txt"
-          ls -la common/firmware/brcm/
-
-      - name: Patch defconfig for BTF + WiFi + uprobes
+      # 4. Patch defconfig for BTF
+      - name: Patch defconfig for BTF
         run: |
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
-          cp $CONFIG ${CONFIG}.backup
-
-          grep -v -E "CONFIG_EXTRA_FIRMWARE|CONFIG_EXTRA_FIRMWARE_DIR|CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_CFG80211|CONFIG_MAC80211|CONFIG_WEXT_CORE|CONFIG_WEXT_PROC|CONFIG_COMPAT_NETLINK_MESSAGES|CONFIG_BRCMUTIL|CONFIG_BRCMFMAC|CONFIG_MMC[^_]|CONFIG_MMC_BCM2835|CONFIG_MMC_SDHCI|CONFIG_UPROBE_EVENTS|CONFIG_KPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_KPROBES[^_]|CONFIG_UPROBES|CONFIG_GENERIC_TRACER|CONFIG_TRACING" ${CONFIG}.backup > $CONFIG
-
-          printf '%s\n' \
-            'CONFIG_DEBUG_INFO=y' \
-            'CONFIG_DEBUG_INFO_DWARF5=y' \
-            'CONFIG_DEBUG_INFO_BTF=y' \
-            'CONFIG_DEBUG_INFO_NONE=n' \
-            'CONFIG_DEBUG_INFO_REDUCED=n' \
-            'CONFIG_DEBUG_INFO_SPLIT=n' \
-            'CONFIG_BPF=y' \
-            'CONFIG_BPF_SYSCALL=y' \
-            'CONFIG_BPF_JIT=y' \
-            'CONFIG_KPROBES=y' \
-            'CONFIG_KPROBE_EVENTS=y' \
-            'CONFIG_UPROBES=y' \
-            'CONFIG_UPROBE_EVENTS=y' \
-            'CONFIG_PERF_EVENTS=y' \
-            'CONFIG_FTRACE=y' \
-            'CONFIG_DYNAMIC_FTRACE=y' \
-            'CONFIG_FUNCTION_TRACER=y' \
-            'CONFIG_GENERIC_TRACER=y' \
-            'CONFIG_TRACING=y' \
-            'CONFIG_CFG80211=y' \
-            'CONFIG_MAC80211=y' \
-            'CONFIG_BRCMUTIL=y' \
-            'CONFIG_BRCMFMAC=y' \
-            'CONFIG_BRCMFMAC_SDIO=y' \
-            'CONFIG_BRCMFMAC_PROTO_BCDC=y' \
-            'CONFIG_MMC=y' \
-            'CONFIG_MMC_BCM2835=y' \
-            'CONFIG_MMC_SDHCI=y' \
-            'CONFIG_MMC_SDHCI_PLTFM=y' \
-            'CONFIG_EXTRA_FIRMWARE="brcm/brcmfmac43455-sdio.bin brcm/brcmfmac43455-sdio.clm_blob brcm/brcmfmac43455-sdio.txt"' \
-            'CONFIG_EXTRA_FIRMWARE_DIR="firmware"' \
-            >> $CONFIG
-
-          echo "=== Final defconfig (last 35 lines) ==="
-          tail -35 $CONFIG
           
+          # Create a backup and clean the config
+          cp $CONFIG ${CONFIG}.backup
+          grep -v "CONFIG_EXTRA_FIRMWARE" ${CONFIG}.backup > $CONFIG
+          
+          cat <<EOF >> $CONFIG
+          # --- Enable debug info (required for BTF) ---
+          CONFIG_DEBUG_INFO=y
+          CONFIG_DEBUG_INFO_DWARF5=y
+          # --- Enable BTF ---
+          CONFIG_DEBUG_INFO_BTF=y
+          # --- Must be disabled for BTF ---
+          CONFIG_DEBUG_INFO_NONE=n
+          CONFIG_DEBUG_INFO_REDUCED=n
+          CONFIG_DEBUG_INFO_SPLIT=n
+          # --- BPF core ---
+          CONFIG_BPF=y
+          CONFIG_BPF_SYSCALL=y
+          CONFIG_BPF_JIT=y
+          EOF
+      # 5. Patch build.config
       - name: Patch build.config
         run: |
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
-
+      # 6. Build kernel
       - name: Build kernel
         run: |
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
-
+      # 7. Find the actual output directory
       - name: Find output files
         run: |
           cd android-kernel
+          
           echo "=== Searching for kernel outputs ==="
-          for path in "bazel-bin/common/rpi4/arch/arm64/boot" "bazel-bin/common/rpi4" "out/rpi4/dist" "common/out/rpi4/dist"; do
+          
+          # Common Android kernel output locations
+          SEARCH_PATHS=(
+            "bazel-bin/common/rpi4/arch/arm64/boot"
+            "bazel-bin/common/rpi4"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4"
+            "out/rpi4/dist"
+            "common/out/rpi4/dist"
+          )
+          
+          for path in "${SEARCH_PATHS[@]}"; do
             if [ -d "$path" ]; then
-              echo "Found: $path"
+              echo "Found output directory: $path"
+              echo "Contents:"
               find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
             fi
           done
+          
+          # Broad search as fallback
           echo "=== Broad search ==="
           find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) -not -path "./.git/*" 2>/dev/null | head -20
-
+      # 8. Copy files from the correct Android output location
       - name: Copy boot files
         run: |
           cd android-kernel
+          
+          # Create package directory
           mkdir -p android-boot-package
-          for path in "bazel-bin/common/rpi4/arch/arm64/boot/Image" "bazel-bin/common/rpi4/arch/arm64/boot/Image.gz" "bazel-bin/common/rpi4/Image"; do
-            if [ -f "$path" ]; then
-              echo "Found kernel image at: $path"
-              cp "$path" android-boot-package/Image
+          
+          # Try different possible output locations
+          POSSIBLE_PATHS=(
+            "bazel-bin/common/rpi4/arch/arm64/boot/Image"
+            "bazel-bin/common/rpi4/arch/arm64/boot/Image.gz"
+            "bazel-bin/common/rpi4/Image"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/Image"
+          )
+          
+          # Find and copy Image
+          for path in "${POSSIBLE_PATHS[@]}"; do
+            if ls $path 1> /dev/null 2>&1; then
+              ACTUAL_IMAGE=$(ls $path 2>/dev/null | head -1)
+              echo "Found kernel image at: $ACTUAL_IMAGE"
+              cp "$ACTUAL_IMAGE" android-boot-package/Image
               break
             fi
           done
-          for file in bazel-bin/common/rpi4/ramdisk.img bazel-bin/common/rpi4/ramdisk-recovery.img; do
-            if [ -f "$file" ]; then
-              cp "$file" android-boot-package/
-              echo "Copied: $(basename $file)"
-            fi
+          
+          # Find ramdisk files
+          RAMDISK_PATHS=(
+            "bazel-bin/common/rpi4/ramdisk.img"
+            "bazel-bin/common/rpi4/ramdisk-recovery.img"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/ramdisk*.img"
+          )
+          
+          for pattern in "${RAMDISK_PATHS[@]}"; do
+            for file in $pattern; do
+              if [ -f "$file" ]; then
+                filename=$(basename "$file")
+                cp "$file" android-boot-package/
+                echo "Found and copied: $filename"
+              fi
+            done
           done
-          for file in bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb bazel-bin/common/rpi4/*.dtb; do
-            if [ -f "$file" ]; then
-              cp "$file" android-boot-package/
-              echo "Copied: $(basename $file)"
-            fi
+          
+          # Find DTB files
+          DTB_PATHS=(
+            "bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
+            "bazel-bin/common/rpi4/*.dtb"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
+          )
+          
+          for pattern in "${DTB_PATHS[@]}"; do
+            for file in $pattern; do
+              if [ -f "$file" ]; then
+                cp "$file" android-boot-package/
+                echo "Found and copied: $(basename $file)"
+              fi
+            done
           done
+          
+          # If still no files, try the dist directory (common Android output)
           if [ -z "$(ls -A android-boot-package)" ]; then
             echo "Trying dist directory..."
-            [ -d "bazel-bin/common/rpi4/dist" ] && cp bazel-bin/common/rpi4/dist/* android-boot-package/ 2>/dev/null || true
+            if [ -d "bazel-bin/common/rpi4/dist" ]; then
+              cp bazel-bin/common/rpi4/dist/* android-boot-package/ 2>/dev/null || true
+            fi
           fi
+          
+          # Final check
           echo "=== Final package contents ==="
-          ls -la android-boot-package/
-
+          ls -la android-boot-package/ || echo "Package is empty"
+      # 9. Last resort: Check bazel symlinks
       - name: Check bazel symlinks
         if: failure()
         run: |
           cd android-kernel
+          echo "=== Checking bazel symlink structure ==="
           if [ -L "bazel-bin" ]; then
-            echo "bazel-bin -> $(readlink bazel-bin)"
-            find "$(readlink -f bazel-bin)" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null
+            echo "bazel-bin is a symlink to: $(readlink bazel-bin)"
+            REAL_PATH=$(readlink -f bazel-bin)
+            echo "Real path: $REAL_PATH"
+            if [ -d "$REAL_PATH" ]; then
+              echo "Contents of real path:"
+              find "$REAL_PATH" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null
+            fi
           fi
-
+      # 10. Upload boot package
       - name: Upload boot package
         uses: actions/upload-artifact@v4
         with:
@@ -149,10 +188,12 @@ jobs:
           path: android-kernel/android-boot-package/*
           if-no-files-found: warn
 
-      - name: Upload bazel output for debugging
-        if: always()
+      # 11. Upload entire bazel output for debugging
+      - name: Upload bazel output for analysis
         uses: actions/upload-artifact@v4
         with:
           name: bazel-output-debug
-          path: android-kernel/bazel-bin/
+          path: |
+            android-kernel/bazel-bin/
           if-no-files-found: warn
+        if: always()
