@@ -23,6 +23,7 @@ jobs:
             flex bison bc \
             libssl-dev libelf-dev \
             dwarves pahole
+
       # 3. Initialize Android kernel source
       - name: Init kernel repo
         run: |
@@ -33,49 +34,61 @@ jobs:
           curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml \
             -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
-      # 4. Patch defconfig for BTF
-      - name: Patch defconfig for BTF
+
+      # 4. Patch defconfig for BTF + uprobes
+      - name: Patch defconfig for BTF + uprobes
         run: |
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
-          
-          # Create a backup and clean the config
           cp $CONFIG ${CONFIG}.backup
-          grep -v "CONFIG_EXTRA_FIRMWARE" ${CONFIG}.backup > $CONFIG
-          
-          cat <<EOF >> $CONFIG
-          # --- Enable debug info (required for BTF) ---
-          CONFIG_DEBUG_INFO=y
-          CONFIG_DEBUG_INFO_DWARF5=y
-          # --- Enable BTF ---
-          CONFIG_DEBUG_INFO_BTF=y
-          # --- Must be disabled for BTF ---
-          CONFIG_DEBUG_INFO_NONE=n
-          CONFIG_DEBUG_INFO_REDUCED=n
-          CONFIG_DEBUG_INFO_SPLIT=n
-          # --- BPF core ---
-          CONFIG_BPF=y
-          CONFIG_BPF_SYSCALL=y
-          CONFIG_BPF_JIT=y
-          EOF
+
+          grep -v -E "CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_KPROBES[^_]|CONFIG_KPROBE_EVENTS|CONFIG_UPROBES|CONFIG_UPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE[^_]|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_GENERIC_TRACER|CONFIG_TRACING|CONFIG_EXTRA_FIRMWARE" \
+            ${CONFIG}.backup > $CONFIG
+
+          printf '%s\n' \
+            'CONFIG_DEBUG_INFO=y' \
+            'CONFIG_DEBUG_INFO_DWARF5=y' \
+            'CONFIG_DEBUG_INFO_BTF=y' \
+            'CONFIG_DEBUG_INFO_NONE=n' \
+            'CONFIG_DEBUG_INFO_REDUCED=n' \
+            'CONFIG_DEBUG_INFO_SPLIT=n' \
+            'CONFIG_BPF=y' \
+            'CONFIG_BPF_SYSCALL=y' \
+            'CONFIG_BPF_JIT=y' \
+            'CONFIG_KPROBES=y' \
+            'CONFIG_KPROBE_EVENTS=y' \
+            'CONFIG_UPROBES=y' \
+            'CONFIG_UPROBE_EVENTS=y' \
+            'CONFIG_PERF_EVENTS=y' \
+            'CONFIG_FTRACE=y' \
+            'CONFIG_DYNAMIC_FTRACE=y' \
+            'CONFIG_FUNCTION_TRACER=y' \
+            'CONFIG_GENERIC_TRACER=y' \
+            'CONFIG_TRACING=y' \
+            >> $CONFIG
+
+          echo "=== Final defconfig (last 25 lines) ==="
+          tail -25 $CONFIG
+
       # 5. Patch build.config
       - name: Patch build.config
         run: |
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
+
       # 6. Build kernel
       - name: Build kernel
         run: |
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
+
       # 7. Find the actual output directory
       - name: Find output files
         run: |
           cd android-kernel
-          
+
           echo "=== Searching for kernel outputs ==="
-          
-          # Common Android kernel output locations
+
           SEARCH_PATHS=(
             "bazel-bin/common/rpi4/arch/arm64/boot"
             "bazel-bin/common/rpi4"
@@ -83,7 +96,7 @@ jobs:
             "out/rpi4/dist"
             "common/out/rpi4/dist"
           )
-          
+
           for path in "${SEARCH_PATHS[@]}"; do
             if [ -d "$path" ]; then
               echo "Found output directory: $path"
@@ -91,27 +104,24 @@ jobs:
               find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
             fi
           done
-          
-          # Broad search as fallback
+
           echo "=== Broad search ==="
           find . -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) -not -path "./.git/*" 2>/dev/null | head -20
+
       # 8. Copy files from the correct Android output location
       - name: Copy boot files
         run: |
           cd android-kernel
-          
-          # Create package directory
+
           mkdir -p android-boot-package
-          
-          # Try different possible output locations
+
           POSSIBLE_PATHS=(
             "bazel-bin/common/rpi4/arch/arm64/boot/Image"
             "bazel-bin/common/rpi4/arch/arm64/boot/Image.gz"
             "bazel-bin/common/rpi4/Image"
             "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/Image"
           )
-          
-          # Find and copy Image
+
           for path in "${POSSIBLE_PATHS[@]}"; do
             if ls $path 1> /dev/null 2>&1; then
               ACTUAL_IMAGE=$(ls $path 2>/dev/null | head -1)
@@ -120,14 +130,13 @@ jobs:
               break
             fi
           done
-          
-          # Find ramdisk files
+
           RAMDISK_PATHS=(
             "bazel-bin/common/rpi4/ramdisk.img"
             "bazel-bin/common/rpi4/ramdisk-recovery.img"
             "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/ramdisk*.img"
           )
-          
+
           for pattern in "${RAMDISK_PATHS[@]}"; do
             for file in $pattern; do
               if [ -f "$file" ]; then
@@ -137,14 +146,13 @@ jobs:
               fi
             done
           done
-          
-          # Find DTB files
+
           DTB_PATHS=(
             "bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
             "bazel-bin/common/rpi4/*.dtb"
             "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4/arch/arm64/boot/dts/broadcom/*.dtb"
           )
-          
+
           for pattern in "${DTB_PATHS[@]}"; do
             for file in $pattern; do
               if [ -f "$file" ]; then
@@ -153,18 +161,17 @@ jobs:
               fi
             done
           done
-          
-          # If still no files, try the dist directory (common Android output)
+
           if [ -z "$(ls -A android-boot-package)" ]; then
             echo "Trying dist directory..."
             if [ -d "bazel-bin/common/rpi4/dist" ]; then
               cp bazel-bin/common/rpi4/dist/* android-boot-package/ 2>/dev/null || true
             fi
           fi
-          
-          # Final check
+
           echo "=== Final package contents ==="
           ls -la android-boot-package/ || echo "Package is empty"
+
       # 9. Last resort: Check bazel symlinks
       - name: Check bazel symlinks
         if: failure()
@@ -180,6 +187,7 @@ jobs:
               find "$REAL_PATH" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null
             fi
           fi
+
       # 10. Upload boot package
       - name: Upload boot package
         uses: actions/upload-artifact@v4
