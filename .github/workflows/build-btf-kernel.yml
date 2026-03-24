@@ -65,6 +65,7 @@ jobs:
             'CONFIG_FUNCTION_TRACER=y' \
             'CONFIG_GENERIC_TRACER=y' \
             'CONFIG_TRACING=y' \
+            'CONFIG_GENERIC_ENTRY=y' \
             >> $CONFIG
 
           echo "=== Final defconfig (last 25 lines) ==="
