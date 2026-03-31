@@ -28,17 +28,19 @@ jobs:
             libssl-dev libelf-dev \
             dwarves pahole
 
-      # 3. Initialize Android kernel source (Updated for Android 13)
+      # 3. Initialize Android kernel source
       - name: Init kernel repo
         run: |
           mkdir android-kernel
           cd android-kernel
-          # Pointing to the Android 13 5.15 Common Kernel
+          # Android 13 uses the 5.15 LTS kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android13-5.15
           mkdir -p .repo/local_manifests
-          # Pointing to the Android 13.0 Raspberry Vanilla manifest
-          curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-13.0/manifest_brcm_rpi.xml \
+          
+          # Corrected URL: Added the '4' to the filename and used the raw content domain
+          curl -fL https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-13.0/manifest_brcm_rpi4.xml \
             -o .repo/local_manifests/rpi.xml
+            
           repo sync -j$(nproc)
 
       # 4. Patch defconfig for BTF + uprobes + Overrides
@@ -48,7 +50,7 @@ jobs:
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
           cp $CONFIG ${CONFIG}.backup
           
-          # Maintain your exact removal list from the Android 16 yaml
+          # Clean out existing debug/bpf settings
           grep -v -E "CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_KPROBES[^_]|CONFIG_KPROBE_EVENTS|CONFIG_UPROBES|CONFIG_UPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE[^_]|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_GENERIC_TRACER|CONFIG_TRACING|CONFIG_EXTRA_FIRMWARE|CONFIG_BPF_KPROBE_OVERRIDE|CONFIG_FUNCTION_ERROR_INJECTION|CONFIG_BPF_EVENTS" \
             ${CONFIG}.backup > $CONFIG
             
