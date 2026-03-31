@@ -64,29 +64,33 @@ jobs:
             'CONFIG_BPF_EVENTS=y' \
             >> "$CONFIG_PATH"
 
-      - name: Build and Distribute Kernel
+      - name: Build Kernel with Bazel
         run: |
           cd android-kernel
-          # 1. We use --jobs=4 and --local_ram_resources to stop the runner from OOM-ing (Out Of Memory)
-          # 2. We use --noshow_progress to keep logs clean and save CPU
-          tools/bazel run //common:rpi4_dist \
+          # Using 'build' instead of 'run' because 'rpi4_dist' doesn't exist
+          # Using //common:rpi4 as the confirmed target
+          tools/bazel build //common:rpi4 \
             --jobs=4 \
             --local_ram_resources=HOST_RAM*.5 \
-            --noshow_progress \
-            -- \
-            --dist_dir=out/dist
+            --verbose_failures
 
-      - name: Prepare Artifacts
+      - name: Locate and Package Artifacts
         run: |
           cd android-kernel
           mkdir -p android-boot-package
-          if [ -d "out/dist" ]; then
-            cp out/dist/Image android-boot-package/ 2>/dev/null || true
-            cp out/dist/*.dtb android-boot-package/ 2>/dev/null || true
-            cp out/dist/ramdisk.img android-boot-package/ 2>/dev/null || true
-            [ -d "out/dist/overlays" ] && cp -r out/dist/overlays android-boot-package/
-          fi
-          ls -la android-boot-package/
+          
+          # Bazel puts outputs in bazel-bin. We search there specifically.
+          echo "Finding Image..."
+          find bazel-bin/common/ -type f -name "Image" -exec cp {} android-boot-package/Image \;
+          
+          echo "Finding DTBs..."
+          find bazel-bin/common/ -type f -name "*.dtb" -exec cp {} android-boot-package/ \;
+          
+          echo "Finding Ramdisk..."
+          find bazel-bin/common/ -type f -name "ramdisk*.img" -exec cp {} android-boot-package/ \;
+
+          echo "=== Final Package Check ==="
+          ls -R android-boot-package/
 
       - name: Upload Boot Package
         uses: actions/upload-artifact@v4
