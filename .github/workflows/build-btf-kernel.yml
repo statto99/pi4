@@ -33,7 +33,8 @@ jobs:
           mkdir -p .repo/local_manifests
           curl -fL https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-13.0/manifest_brcm_rpi4.xml \
             -o .repo/local_manifests/rpi.xml
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle
+          # Using --no-tags and -c to save disk space and memory during sync
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
 
       - name: Patch RPi4 Fragment for BTF + uprobes
         run: |
@@ -64,35 +65,33 @@ jobs:
             'CONFIG_BPF_EVENTS=y' \
             >> "$CONFIG_PATH"
 
-      - name: Build Kernel with Bazel
+      - name: Build Kernel with Strict Resource Limits
         run: |
           cd android-kernel
-          # Using 'build' instead of 'run' because 'rpi4_dist' doesn't exist
-          # Using //common:rpi4 as the confirmed target
+          # --jobs=2: Slow but prevents the RAM usage from spiking
+          # --local_ram_resources=3072: Limit Bazel to ~3GB, leaving room for the OS
+          # --nocheck_visibility: Skips a very memory-intensive Bazel analysis step
           tools/bazel build //common:rpi4 \
-            --jobs=4 \
-            --local_ram_resources=HOST_RAM*.5 \
+            --jobs=2 \
+            --local_ram_resources=3072 \
+            --nocheck_visibility \
+            --noshow_loading_progress \
+            --noshow_progress \
             --verbose_failures
 
       - name: Locate and Package Artifacts
+        if: success()
         run: |
           cd android-kernel
           mkdir -p android-boot-package
-          
-          # Bazel puts outputs in bazel-bin. We search there specifically.
-          echo "Finding Image..."
-          find bazel-bin/common/ -type f -name "Image" -exec cp {} android-boot-package/Image \;
-          
-          echo "Finding DTBs..."
-          find bazel-bin/common/ -type f -name "*.dtb" -exec cp {} android-boot-package/ \;
-          
-          echo "Finding Ramdisk..."
-          find bazel-bin/common/ -type f -name "ramdisk*.img" -exec cp {} android-boot-package/ \;
-
-          echo "=== Final Package Check ==="
+          echo "Deep search for artifacts..."
+          find bazel-bin/ -type f -name "Image" -exec cp {} android-boot-package/Image \;
+          find bazel-bin/ -type f -name "*.dtb" -exec cp {} android-boot-package/ \;
+          find bazel-bin/ -type f -name "ramdisk*.img" -exec cp {} android-boot-package/ \;
           ls -R android-boot-package/
 
       - name: Upload Boot Package
+        if: success()
         uses: actions/upload-artifact@v4
         with:
           name: android13-rpi4-kernel-btf
