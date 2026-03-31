@@ -1,4 +1,4 @@
-name: Build RPi4 Kernel (Android 13) with BTF
+name: Build RPi4 Kernel (Android 13) - Discovery Mode
 
 on:
   workflow_dispatch:
@@ -17,13 +17,7 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt update
-          sudo apt install -y \
-            repo git curl \
-            build-essential \
-            clang llvm lld \
-            flex bison bc \
-            libssl-dev libelf-dev \
-            dwarves pahole
+          sudo apt install -y repo git curl build-essential clang llvm lld flex bison bc libssl-dev libelf-dev dwarves pahole
 
       - name: Init kernel repo
         run: |
@@ -31,69 +25,41 @@ jobs:
           cd android-kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android13-5.15
           mkdir -p .repo/local_manifests
-          curl -fL https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-13.0/manifest_brcm_rpi4.xml \
-            -o .repo/local_manifests/rpi.xml
-          # Using --no-tags and -c to save disk space and memory during sync
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle --no-tags
+          curl -fL https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-13.0/manifest_brcm_rpi4.xml -o .repo/local_manifests/rpi.xml
+          repo sync -c -j$(nproc) --force-sync --no-clone-bundle
 
-      - name: Patch RPi4 Fragment for BTF + uprobes
+      - name: Patch RPi4 Fragment
         run: |
           cd android-kernel
           CONFIG_PATH="common/build.config.rpi4.defconfig"
-          if [ ! -f "$CONFIG_PATH" ]; then exit 1; fi
-          
-          cp "$CONFIG_PATH" "${CONFIG_PATH}.backup"
-          grep -v -E "CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_KPROBES[^_]|CONFIG_KPROBE_EVENTS|CONFIG_UPROBES|CONFIG_UPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE[^_]|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_TRACING|CONFIG_BPF_EVENTS" \
-            "${CONFIG_PATH}.backup" > "$CONFIG_PATH"
-            
-          printf '%s\n' \
-            'CONFIG_DEBUG_INFO=y' \
-            'CONFIG_DEBUG_INFO_DWARF5=y' \
-            'CONFIG_DEBUG_INFO_BTF=y' \
-            'CONFIG_BPF=y' \
-            'CONFIG_BPF_SYSCALL=y' \
-            'CONFIG_BPF_JIT=y' \
-            'CONFIG_KPROBES=y' \
-            'CONFIG_KPROBE_EVENTS=y' \
-            'CONFIG_UPROBES=y' \
-            'CONFIG_UPROBE_EVENTS=y' \
-            'CONFIG_PERF_EVENTS=y' \
-            'CONFIG_FTRACE=y' \
-            'CONFIG_DYNAMIC_FTRACE=y' \
-            'CONFIG_FUNCTION_TRACER=y' \
-            'CONFIG_TRACING=y' \
-            'CONFIG_BPF_EVENTS=y' \
-            >> "$CONFIG_PATH"
+          [ ! -f "$CONFIG_PATH" ] && exit 1
+          printf 'CONFIG_DEBUG_INFO=y\nCONFIG_DEBUG_INFO_BTF=y\nCONFIG_BPF=y\nCONFIG_BPF_SYSCALL=y\n' >> "$CONFIG_PATH"
 
-      - name: Build Kernel with Strict Resource Limits
+      - name: Discover and Build Target
         run: |
           cd android-kernel
-          # --jobs=2: Slow but prevents the RAM usage from spiking
-          # --local_ram_resources=3072: Limit Bazel to ~3GB, leaving room for the OS
-          # --nocheck_visibility: Skips a very memory-intensive Bazel analysis step
-          tools/bazel build //common:rpi4 \
-            --jobs=2 \
-            --local_ram_resources=3072 \
-            --nocheck_visibility \
-            --noshow_loading_progress \
-            --noshow_progress \
-            --verbose_failures
+          echo "=== DISCOVERING TARGETS ==="
+          # This query finds everything that looks like an rpi4 build target
+          tools/bazel query "//...:all" | grep rpi4 || true
+          
+          echo "=== ATTEMPTING BUILD ==="
+          # Based on Android 13 patterns, it is likely one of these:
+          # //common:rpi4_pcie or //common:kernel_rpi4
+          # We will try the most likely candidate from the RPi manifest
+          tools/bazel build //common:rpi4_pcie --jobs=2 --local_ram_resources=3072 || \
+          tools/bazel build //common:kernel_rpi4 --jobs=2 --local_ram_resources=3072
 
       - name: Locate and Package Artifacts
-        if: success()
+        if: always()
         run: |
           cd android-kernel
           mkdir -p android-boot-package
-          echo "Deep search for artifacts..."
           find bazel-bin/ -type f -name "Image" -exec cp {} android-boot-package/Image \;
           find bazel-bin/ -type f -name "*.dtb" -exec cp {} android-boot-package/ \;
-          find bazel-bin/ -type f -name "ramdisk*.img" -exec cp {} android-boot-package/ \;
           ls -R android-boot-package/
 
-      - name: Upload Boot Package
-        if: success()
+      - name: Upload Artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: android13-rpi4-kernel-btf
+          name: rpi4-debug-build
           path: android-kernel/android-boot-package/
-          if-no-files-found: error
