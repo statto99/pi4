@@ -3,13 +3,18 @@ name: Build RPi4 Kernel (Android 12.1) with BTF
 on:
   workflow_dispatch:
 
+# Set the environment variable at the top level to apply to all steps
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
-    # ubuntu-22.04 is more stable for legacy Android 12 toolchains
+    # ubuntu-22.04 is still the "sweet spot" for Android 12 toolchains, 
+    # but the runner will now use Node 24 for the Actions themselves.
     runs-on: ubuntu-22.04
 
     steps:
-      # 1. Checkout
+      # 1. Checkout (Now forced to run on Node 24 via the env var)
       - name: Checkout
         uses: actions/checkout@v4
 
@@ -25,15 +30,13 @@ jobs:
             libssl-dev libelf-dev \
             dwarves pahole
 
-      # 3. Initialize Android kernel source (Android 12.1 specific)
+      # 3. Initialize Android kernel source (Android 12.1 branch)
       - name: Init kernel repo
         run: |
           mkdir android-kernel
           cd android-kernel
-          # Use the 5.10 branch for Android 12.1
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android12-5.10
           mkdir -p .repo/local_manifests
-          # Fetch the RPi manifest for the 12.1 branch
           curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-12.1/manifest_brcm_rpi.xml \
             -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
@@ -43,17 +46,15 @@ jobs:
         run: |
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
-          
-          # Check if file exists, if not find it (legacy paths sometimes vary)
           [ ! -f "$CONFIG" ] && CONFIG=$(find common -name "android_rpi4_defconfig")
           
           cp $CONFIG ${CONFIG}.backup
           
-          # Strip existing debug/bpf/ftrace symbols to prevent duplicates
+          # Remove conflicting lines
           grep -v -E "CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_BTF|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_KPROBES[^_]|CONFIG_KPROBE_EVENTS|CONFIG_UPROBES|CONFIG_UPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE[^_]|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_TRACING|CONFIG_BPF_KPROBE_OVERRIDE|CONFIG_FUNCTION_ERROR_INJECTION|CONFIG_BPF_EVENTS" \
             ${CONFIG}.backup > $CONFIG
           
-          # Inject BTF and BPF requirements
+          # Add BTF/BPF configs
           printf '%s\n' \
             'CONFIG_DEBUG_INFO=y' \
             'CONFIG_DEBUG_INFO_BTF=y' \
@@ -73,38 +74,26 @@ jobs:
             'CONFIG_BPF_KPROBE_OVERRIDE=y' \
             'CONFIG_BPF_EVENTS=y' \
             >> $CONFIG
-          
-          echo "=== Patch Applied ==="
-          tail -n 20 $CONFIG
 
-      # 5. Build kernel using legacy build.sh
+      # 5. Build kernel using build.sh (Android 12.1 standard)
       - name: Build kernel
         run: |
           cd android-kernel
-          # Android 12.1 uses build.sh. LTO=thin prevents OOM errors in CI.
           LTO=thin BUILD_CONFIG=common/build.config.rpi build/build.sh -j$(nproc)
 
-      # 6. Copy files from the legacy 'dist' output
+      # 6. Copy files from 'dist'
       - name: Copy boot files
         run: |
           cd android-kernel
           mkdir -p android-boot-package
-          
-          # The legacy build system outputs to the 'out' directory
           DIST_DIR=$(find out -name "dist" -type d | head -n 1)
           
           if [ -n "$DIST_DIR" ]; then
-            echo "Found distribution directory: $DIST_DIR"
             cp $DIST_DIR/Image android-boot-package/ 2>/dev/null || true
             cp $DIST_DIR/*.dtb android-boot-package/ 2>/dev/null || true
             cp $DIST_DIR/ramdisk.img android-boot-package/ 2>/dev/null || true
-            # Raspberry Pi overlays are often needed too
-            if [ -d "$DIST_DIR/overlays" ]; then
-                cp -r $DIST_DIR/overlays android-boot-package/
-            fi
+            [ -d "$DIST_DIR/overlays" ] && cp -r $DIST_DIR/overlays android-boot-package/
           else
-            echo "Error: Dist directory not found. Listing 'out' for debugging:"
-            ls -R out
             exit 1
           fi
 
