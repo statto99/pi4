@@ -11,11 +11,9 @@ jobs:
     runs-on: ubuntu-24.04
 
     steps:
-      # 1. Checkout
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Install dependencies
       - name: Install dependencies
         run: |
           sudo apt update
@@ -27,52 +25,39 @@ jobs:
             libssl-dev libelf-dev \
             dwarves pahole
 
-      # 3. Initialize Android kernel source
+      # 3. Corrected Initialization: Using RPi manifest as the primary source
       - name: Init kernel repo
         run: |
           mkdir android-kernel
           cd android-kernel
-          # Android 13 uses the 5.15 LTS kernel
-          repo init -u https://android.googlesource.com/kernel/manifest -b common-android13-5.15
-          mkdir -p .repo/local_manifests
-          
-          # Using the verified raw URL and filename for Android 13
-          curl -fL https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-13.0/manifest_brcm_rpi4.xml \
-            -o .repo/local_manifests/rpi.xml
-            
+          # We point directly to the Raspberry Vanilla manifest repository
+          repo init -u https://github.com/raspberry-vanilla/android_kernel_manifest -b android-13.0 -m manifest_brcm_rpi4.xml
           repo sync -j$(nproc)
 
-      # 4. Robust Patching (Search then Patch)
+      # 4. Patching with verified paths
       - name: Patch defconfig for BTF + uprobes
         run: |
           cd android-kernel
-          
-          # SEARCH: Find where the defconfig actually lives
-          echo "Searching for android_rpi4_defconfig..."
+          # Now that we have the right kernel, this find will succeed
           CONFIG_PATH=$(find . -name "android_rpi4_defconfig" | head -n 1)
           
           if [ -z "$CONFIG_PATH" ]; then
-            echo "!! ERROR: Could not find android_rpi4_defconfig !!"
-            echo "Directory structure for debugging:"
-            find . -maxdepth 3 -type d
+            echo "!! ERROR: android_rpi4_defconfig still not found !!"
+            find . -name "*defconfig" | head -n 20
             exit 1
           fi
           
           echo "Found config at: $CONFIG_PATH"
           cp "$CONFIG_PATH" "${CONFIG_PATH}.backup"
           
-          # Removal list (same as your Android 16 setup)
+          # Clean and Inject BTF/BPF configs
           grep -v -E "CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_KPROBES[^_]|CONFIG_KPROBE_EVENTS|CONFIG_UPROBES|CONFIG_UPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE[^_]|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_GENERIC_TRACER|CONFIG_TRACING|CONFIG_EXTRA_FIRMWARE|CONFIG_BPF_KPROBE_OVERRIDE|CONFIG_FUNCTION_ERROR_INJECTION|CONFIG_BPF_EVENTS" \
             "${CONFIG_PATH}.backup" > "$CONFIG_PATH"
             
-          # Inject configurations
           printf '%s\n' \
             'CONFIG_DEBUG_INFO=y' \
             'CONFIG_DEBUG_INFO_DWARF5=y' \
             'CONFIG_DEBUG_INFO_BTF=y' \
-            'CONFIG_DEBUG_INFO_NONE=n' \
-            'CONFIG_DEBUG_INFO_REDUCED=n' \
-            'CONFIG_DEBUG_INFO_SPLIT=n' \
             'CONFIG_BPF=y' \
             'CONFIG_BPF_SYSCALL=y' \
             'CONFIG_BPF_JIT=y' \
@@ -84,72 +69,33 @@ jobs:
             'CONFIG_FTRACE=y' \
             'CONFIG_DYNAMIC_FTRACE=y' \
             'CONFIG_FUNCTION_TRACER=y' \
-            'CONFIG_GENERIC_TRACER=y' \
             'CONFIG_TRACING=y' \
             'CONFIG_FUNCTION_ERROR_INJECTION=y' \
             'CONFIG_BPF_KPROBE_OVERRIDE=y' \
             'CONFIG_BPF_EVENTS=y' \
             >> "$CONFIG_PATH"
-            
-          echo "=== Patch Applied to $CONFIG_PATH ==="
-          tail -20 "$CONFIG_PATH"
 
-      # 5. Patch build.config (Dynamic Search)
-      - name: Patch build.config
+      - name: Build and Distribute Kernel
         run: |
           cd android-kernel
-          BCONFIG=$(find . -name "build.config.rpi" | head -n 1)
-          if [ -n "$BCONFIG" ]; then
-            echo "Patching $BCONFIG"
-            echo "DEBUG_INFO=1" >> "$BCONFIG"
-          else
-            echo "build.config.rpi not found, skipping."
-          fi
+          # Added --local_ram_resources=HOST_RAM*.6 to prevent OOM crashes on the runner
+          tools/bazel run //common:rpi4_dist -- --dist_dir=out/dist --local_ram_resources=HOST_RAM*.6
 
-      # 6. Build kernel
-      - name: Build kernel
-        run: |
-          cd android-kernel
-          tools/bazel build //common:rpi4 --verbose_failures
-
-      # 7-11. Search, Copy, and Upload (Your original logic)
-      - name: Find output files
-        run: |
-          cd android-kernel
-          echo "=== Searching for kernel outputs ==="
-          SEARCH_PATHS=(
-            "bazel-bin/common/rpi4/arch/arm64/boot"
-            "bazel-bin/common/rpi4"
-            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4"
-          )
-          for path in "${SEARCH_PATHS[@]}"; do
-            if [ -d "$path" ]; then
-              echo "Found path: $path"
-              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) | head -5
-            fi
-          done
-
-      - name: Copy boot files
+      - name: Prepare Artifacts
         run: |
           cd android-kernel
           mkdir -p android-boot-package
-          find bazel-bin/ -type f -name "Image" -exec cp {} android-boot-package/Image \; -quit || true
-          find bazel-bin/ -type f -name "*.dtb" -exec cp {} android-boot-package/ \; || true
-          find bazel-bin/ -type f -name "ramdisk*.img" -exec cp {} android-boot-package/ \; || true
-          
-          # Check if we got anything
+          if [ -d "out/dist" ]; then
+            cp out/dist/Image android-boot-package/ 2>/dev/null || true
+            cp out/dist/*.dtb android-boot-package/ 2>/dev/null || true
+            cp out/dist/ramdisk.img android-boot-package/ 2>/dev/null || true
+            [ -d "out/dist/overlays" ] && cp -r out/dist/overlays android-boot-package/
+          fi
           ls -la android-boot-package/
 
-      - name: Upload boot package
+      - name: Upload Boot Package
         uses: actions/upload-artifact@v4
         with:
-          name: android13-rpi4-boot-files
-          path: android-kernel/android-boot-package/*
-          if-no-files-found: warn
-
-      - name: Upload bazel output for analysis
-        uses: actions/upload-artifact@v4
-        with:
-          name: bazel-output-debug
-          path: android-kernel/bazel-bin/
-        if: always()
+          name: android13-rpi4-btf-kernel
+          path: android-kernel/android-boot-package/
+          if-no-files-found: error
