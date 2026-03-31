@@ -4,7 +4,6 @@ on:
   workflow_dispatch:
 
 env:
-  # This stops deprecation warnings from slowing down the runner
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
 
 jobs:
@@ -26,43 +25,37 @@ jobs:
             libssl-dev libelf-dev \
             dwarves pahole
 
-      # 3. The "Overlay" Strategy (Base + Local Manifest)
       - name: Init kernel repo
         run: |
           mkdir android-kernel
           cd android-kernel
-          # 1. Initialize with the official Google Android 13 Manifest
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android13-5.15
-          
-          # 2. Add the Raspberry Pi overlay to the correct folder
           mkdir -p .repo/local_manifests
+          # Verified URL
           curl -fL https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-13.0/manifest_brcm_rpi4.xml \
             -o .repo/local_manifests/rpi.xml
-            
-          # 3. Sync with --force-sync. This is MANDATORY because the RPi manifest 
-          # needs to "delete" the Google kernel folder and swap in its own.
-          repo sync -c -j$(nproc) --force-sync --no-clone-bundle
+          # Syncing specifically to ensure the RPi overlay lands
+          repo sync -c -j$(nproc) --force-sync
 
-      # 4. Patching (Finding the RPi source)
-      - name: Patch defconfig for BTF + uprobes
+      - name: Patch RPi4 Fragment for BTF + uprobes
         run: |
           cd android-kernel
-          # Searching everywhere for the RPi4 config
-          CONFIG_PATH=$(find . -name "android_rpi4_defconfig" | head -n 1)
+          # TARGET FILE FOUND IN YOUR LOG:
+          CONFIG_PATH="common/build.config.rpi4.defconfig"
           
-          if [ -z "$CONFIG_PATH" ]; then
-            echo "!! ERROR: android_rpi4_defconfig not found after sync !!"
-            echo "Searching for any defconfig to help debug:"
-            find . -name "*defconfig" | head -n 10
+          if [ ! -f "$CONFIG_PATH" ]; then
+            echo "!! ERROR: $CONFIG_PATH still missing !!"
             exit 1
           fi
           
-          echo "Found config at: $CONFIG_PATH"
+          echo "Patching $CONFIG_PATH..."
           cp "$CONFIG_PATH" "${CONFIG_PATH}.backup"
           
-          grep -v -E "CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_DEBUG_INFO_NONE|CONFIG_DEBUG_INFO_REDUCED|CONFIG_DEBUG_INFO_SPLIT|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_KPROBES[^_]|CONFIG_KPROBE_EVENTS|CONFIG_UPROBES|CONFIG_UPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE[^_]|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_GENERIC_TRACER|CONFIG_TRACING|CONFIG_EXTRA_FIRMWARE|CONFIG_BPF_KPROBE_OVERRIDE|CONFIG_FUNCTION_ERROR_INJECTION|CONFIG_BPF_EVENTS" \
+          # Clean out existing BPF/BTF/Tracing to avoid conflicts
+          grep -v -E "CONFIG_DEBUG_INFO[^_]|CONFIG_DEBUG_INFO_DWARF5|CONFIG_DEBUG_INFO_BTF|CONFIG_BPF[^_]|CONFIG_BPF_SYSCALL|CONFIG_BPF_JIT|CONFIG_KPROBES[^_]|CONFIG_KPROBE_EVENTS|CONFIG_UPROBES|CONFIG_UPROBE_EVENTS|CONFIG_PERF_EVENTS|CONFIG_FTRACE[^_]|CONFIG_DYNAMIC_FTRACE|CONFIG_FUNCTION_TRACER|CONFIG_TRACING|CONFIG_BPF_EVENTS" \
             "${CONFIG_PATH}.backup" > "$CONFIG_PATH"
             
+          # Add the required BTF and Tracing options
           printf '%s\n' \
             'CONFIG_DEBUG_INFO=y' \
             'CONFIG_DEBUG_INFO_DWARF5=y' \
@@ -79,25 +72,29 @@ jobs:
             'CONFIG_DYNAMIC_FTRACE=y' \
             'CONFIG_FUNCTION_TRACER=y' \
             'CONFIG_TRACING=y' \
-            'CONFIG_FUNCTION_ERROR_INJECTION=y' \
-            'CONFIG_BPF_KPROBE_OVERRIDE=y' \
             'CONFIG_BPF_EVENTS=y' \
             >> "$CONFIG_PATH"
+          
+          echo "=== Patch Applied ==="
+          tail -n 20 "$CONFIG_PATH"
 
-      - name: Build kernel
+      - name: Build and Distribute Kernel
         run: |
           cd android-kernel
-          # We use your original build target
-          tools/bazel build //common:rpi4 --verbose_failures
+          # Use the _dist target which is standard for Kleaf (Android 13+)
+          # Added RAM limit to prevent the runner from crashing
+          tools/bazel run //common:rpi4_dist -- --dist_dir=out/dist --local_ram_resources=HOST_RAM*.6
 
-      - name: Locate and Package Artifacts
+      - name: Prepare Artifacts
         run: |
           cd android-kernel
           mkdir -p android-boot-package
-          # Deep search for build artifacts to avoid symlink issues
-          find bazel-bin/ -type f -name "Image" -exec cp {} android-boot-package/Image \;
-          find bazel-bin/ -type f -name "*.dtb" -exec cp {} android-boot-package/ \;
-          find bazel-bin/ -type f -name "ramdisk*.img" -exec cp {} android-boot-package/ \;
+          if [ -d "out/dist" ]; then
+            cp out/dist/Image android-boot-package/ 2>/dev/null || true
+            cp out/dist/*.dtb android-boot-package/ 2>/dev/null || true
+            cp out/dist/ramdisk.img android-boot-package/ 2>/dev/null || true
+            [ -d "out/dist/overlays" ] && cp -r out/dist/overlays android-boot-package/
+          fi
           ls -la android-boot-package/
 
       - name: Upload Boot Package
@@ -105,4 +102,4 @@ jobs:
         with:
           name: android13-rpi4-kernel-btf
           path: android-kernel/android-boot-package/
-          if-no-files-found: warn
+          if-no-files-found: error
