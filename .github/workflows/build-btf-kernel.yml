@@ -7,11 +7,11 @@ jobs:
   build:
     runs-on: ubuntu-24.04
     steps:
-      # 1. Checkout
+      # 1. Checkout the workflow repository
       - name: Checkout
         uses: actions/checkout@v4
 
-      # 2. Install dependencies
+      # 2. Install build dependencies
       - name: Install dependencies
         run: |
           sudo apt update
@@ -23,7 +23,7 @@ jobs:
             libssl-dev libelf-dev \
             dwarves pahole
 
-      # 3. Initialize Android kernel source
+      # 3. Initialize and sync Android kernel source (6.12 LTS)
       - name: Init kernel repo
         run: |
           mkdir android-kernel
@@ -34,18 +34,19 @@ jobs:
             -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
 
-      # 4. Patch defconfig for BTF + Tracing + Debugging
+      # 4. Patch defconfig for BTF, BPF, Tracing, and Firmware Fix
       - name: Patch defconfig for BTF + uprobes
         run: |
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
           cp $CONFIG ${CONFIG}.backup
           
-          # Clean out existing versions of the requested flags
-          grep -v -E "CONFIG_DEBUG_FS|CONFIG_DEBUG_KERNEL|CONFIG_BPF|CONFIG_FTRACE|CONFIG_TRACING|CONFIG_DYNAMIC_FTRACE|CONFIG_KPROBE|CONFIG_UPROBE|CONFIG_RETPROBES|CONFIG_PROBE_EVENTS|CONFIG_EVENT_TRACING|CONFIG_PERF_EVENTS|CONFIG_DEBUG_INFO|CONFIG_KALLSYMS|CONFIG_IKCONFIG|CONFIG_FRAME_POINTER|CONFIG_STRIP_ASM_SYMS|CONFIG_SECURITY_SELINUX_DEVELOP|CONFIG_SECURITY_PERF_EVENTS_RESTRICT|CONFIG_CGROUP_BPF|CONFIG_FUNCTION_ERROR_INJECTION|CONFIG_BPF_KPROBE_OVERRIDE" \
+          # Clean out existing versions of requested flags to prevent duplicates
+          # We also remove FIRMWARE and EXTRA_FIRMWARE to fix the build error
+          grep -v -E "CONFIG_DEBUG_FS|CONFIG_DEBUG_KERNEL|CONFIG_BPF|CONFIG_FTRACE|CONFIG_TRACING|CONFIG_DYNAMIC_FTRACE|CONFIG_KPROBE|CONFIG_UPROBE|CONFIG_RETPROBES|CONFIG_PROBE_EVENTS|CONFIG_EVENT_TRACING|CONFIG_PERF_EVENTS|CONFIG_DEBUG_INFO|CONFIG_KALLSYMS|CONFIG_IKCONFIG|CONFIG_FRAME_POINTER|CONFIG_STRIP_ASM_SYMS|CONFIG_SECURITY_SELINUX_DEVELOP|CONFIG_SECURITY_PERF_EVENTS_RESTRICT|CONFIG_CGROUP_BPF|CONFIG_FUNCTION_ERROR_INJECTION|CONFIG_BPF_KPROBE_OVERRIDE|CONFIG_EXTRA_FIRMWARE|CONFIG_FW_LOADER_USER_HELPER" \
             ${CONFIG}.backup > $CONFIG
 
-          # Append your requested options
+          # Append optimized options
           printf '%s\n' \
             'CONFIG_DEBUG_FS=y' \
             'CONFIG_DEBUG_KERNEL=y' \
@@ -80,24 +81,26 @@ jobs:
             'CONFIG_BPF_KPROBE_OVERRIDE=y' \
             'CONFIG_SECURITY_SELINUX_DEVELOP=y' \
             'CONFIG_SECURITY_PERF_EVENTS_RESTRICT=n' \
+            'CONFIG_EXTRA_FIRMWARE=""' \
+            '# CONFIG_FW_LOADER_USER_HELPER is not set' \
             >> $CONFIG
           
           echo "=== Final defconfig validation (last 40 lines) ==="
           tail -40 $CONFIG
 
-      # 5. Patch build.config
+      # 5. Patch build.config to ensure debug info is generated
       - name: Patch build.config
         run: |
           cd android-kernel
           echo "DEBUG_INFO=1" >> common/build.config.rpi || true
 
-      # 6. Build kernel
+      # 6. Build kernel using Bazel/Kleaf
       - name: Build kernel
         run: |
           cd android-kernel
           tools/bazel build //common:rpi4 --verbose_failures
 
-      # 7. Find the actual output directory
+      # 7. Locate Build Artifacts
       - name: Find output files
         run: |
           cd android-kernel
@@ -106,42 +109,56 @@ jobs:
             "bazel-bin/common/rpi4/arch/arm64/boot"
             "bazel-bin/common/rpi4"
             "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4"
-            "out/rpi4/dist"
-            "common/out/rpi4/dist"
           )
           for path in "${SEARCH_PATHS[@]}"; do
             if [ -d "$path" ]; then
               echo "Found output directory: $path"
-              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
+              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" -o -name "*.dtbo" \) 2>/dev/null | head -10
             fi
           done
 
-      # 8. Copy files from the correct Android output location
+      # 8. Copy files to staging for upload
       - name: Copy boot files
         run: |
           cd android-kernel
           mkdir -p android-boot-package
-          POSSIBLE_PATHS=(
-            "bazel-bin/common/rpi4/arch/arm64/boot/Image"
-            "bazel-bin/common/rpi4/Image"
-          )
-          for path in "${POSSIBLE_PATHS[@]}"; do
-            if [ -f "$path" ]; then
-              cp "$path" android-boot-package/Image
-              echo "Copied Image from $path"
-              break
-            fi
-          done
-          # Copy DTBs and Ramdisks (simplified for brevity, keeping your logic)
+          
+          # Copy Kernel Image
+          find bazel-bin/common/rpi4 -name "Image" -exec cp {} android-boot-package/Image \;
+          
+          # Copy Device Tree Blobs and Overlays
           find bazel-bin/common/rpi4 -name "*.dtb" -exec cp {} android-boot-package/ \;
+          find bazel-bin/common/rpi4 -name "*.dtbo" -exec cp {} android-boot-package/ \;
+          
+          # Copy Ramdisks
           find bazel-bin/common/rpi4 -name "ramdisk*.img" -exec cp {} android-boot-package/ \;
           
           echo "=== Final package contents ==="
           ls -la android-boot-package/
 
-      # 10. Upload boot package
+      # 9. Debugging: Check symlinks if build failed
+      - name: Check bazel symlinks
+        if: failure()
+        run: |
+          cd android-kernel
+          if [ -L "bazel-bin" ]; then
+            echo "bazel-bin points to: $(readlink -f bazel-bin)"
+            find "$(readlink -f bazel-bin)" -type f \( -name "Image" -o -name "*.dtb" \) 2>/dev/null | head -20
+          fi
+
+      # 10. Upload resulting boot files
       - name: Upload boot package
         uses: actions/upload-artifact@v4
         with:
           name: android-rpi4-boot-files
           path: android-kernel/android-boot-package/*
+          if-no-files-found: warn
+
+      # 11. Optional: Upload bazel-bin for deep analysis (runs always)
+      - name: Upload bazel output for analysis
+        uses: actions/upload-artifact@v4
+        with:
+          name: bazel-output-debug
+          path: android-kernel/bazel-bin/common/rpi4/
+          if-no-files-found: warn
+        if: always()
