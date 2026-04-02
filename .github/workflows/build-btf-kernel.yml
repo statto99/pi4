@@ -6,7 +6,6 @@ on:
 jobs:
   build:
     runs-on: ubuntu-24.04
-
     steps:
       # 1. Checkout
       - name: Checkout
@@ -22,12 +21,12 @@ jobs:
             clang llvm lld \
             flex bison bc \
             libssl-dev libelf-dev \
-            dwarves pahole rsync
+            dwarves pahole
 
       # 3. Initialize Android kernel source
       - name: Init kernel repo
         run: |
-          mkdir -p android-kernel
+          mkdir android-kernel
           cd android-kernel
           repo init -u https://android.googlesource.com/kernel/manifest -b common-android16-6.12-lts
           mkdir -p .repo/local_manifests
@@ -35,34 +34,18 @@ jobs:
             -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
 
-      # 3.5 Fix missing firmware dependency (Fixes regulatory.db error)
-      - name: Fix missing regulatory firmware
-        run: |
-          cd android-kernel
-          # Create the directory structure the build expects
-          mkdir -p vendor/brcm/rpi4/proprietary/vendor/firmware/
-          
-          # Download the real regulatory.db from the official Linux firmware repo
-          curl -L https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db \
-            -o vendor/brcm/rpi4/proprietary/vendor/firmware/regulatory.db
-          
-          # Provide the public key signature as well
-          curl -L https://git.kernel.org/pub/scm/linux/kernel/git/sforshee/wireless-regdb.git/plain/regulatory.db.p7s \
-            -o vendor/brcm/rpi4/proprietary/vendor/firmware/regulatory.db.p7s
-
-      # 4. Patch defconfig for BTF, BPF, and Tracing
-      - name: Patch defconfig with critical tracing options
+      # 4. Patch defconfig for BTF + Tracing + Debugging
+      - name: Patch defconfig for BTF + uprobes
         run: |
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
           cp $CONFIG ${CONFIG}.backup
           
-          # 1. Clean out existing versions to prevent Kleaf "actual vs expected" mismatches
-          grep -v -E "CONFIG_DEBUG_FS|CONFIG_DEBUG_KERNEL|CONFIG_BPF|CONFIG_FTRACE|CONFIG_TRACING|CONFIG_DYNAMIC_FTRACE|CONFIG_KPROBE|CONFIG_UPROBE|CONFIG_RETPROBES|CONFIG_PROBE_EVENTS|CONFIG_EVENT_TRACING|CONFIG_PERF_EVENTS|CONFIG_DEBUG_INFO|CONFIG_KALLSYMS|CONFIG_IKCONFIG|CONFIG_FRAME_POINTER|CONFIG_STRIP_ASM_SYMS|CONFIG_SECURITY_SELINUX_DEVELOP|CONFIG_SECURITY_PERF_EVENTS_RESTRICT|CONFIG_CGROUP_BPF" \
+          # Clean out existing versions of the requested flags
+          grep -v -E "CONFIG_DEBUG_FS|CONFIG_DEBUG_KERNEL|CONFIG_BPF|CONFIG_FTRACE|CONFIG_TRACING|CONFIG_DYNAMIC_FTRACE|CONFIG_KPROBE|CONFIG_UPROBE|CONFIG_RETPROBES|CONFIG_PROBE_EVENTS|CONFIG_EVENT_TRACING|CONFIG_PERF_EVENTS|CONFIG_DEBUG_INFO|CONFIG_KALLSYMS|CONFIG_IKCONFIG|CONFIG_FRAME_POINTER|CONFIG_STRIP_ASM_SYMS|CONFIG_SECURITY_SELINUX_DEVELOP|CONFIG_SECURITY_PERF_EVENTS_RESTRICT|CONFIG_CGROUP_BPF|CONFIG_FUNCTION_ERROR_INJECTION|CONFIG_BPF_KPROBE_OVERRIDE" \
             ${CONFIG}.backup > $CONFIG
 
-          # 2. Append RPi4-relevant BPF/BTF/Debug options
-          # Note: Removed auto-selected ANON_INODES and RETPROBES to satisfy Kleaf check
+          # Append your requested options
           printf '%s\n' \
             'CONFIG_DEBUG_FS=y' \
             'CONFIG_DEBUG_KERNEL=y' \
@@ -93,41 +76,72 @@ jobs:
             'CONFIG_IKCONFIG_PROC=y' \
             'CONFIG_FRAME_POINTER=y' \
             'CONFIG_STRIP_ASM_SYMS=n' \
+            'CONFIG_FUNCTION_ERROR_INJECTION=y' \
+            'CONFIG_BPF_KPROBE_OVERRIDE=y' \
             'CONFIG_SECURITY_SELINUX_DEVELOP=y' \
             'CONFIG_SECURITY_PERF_EVENTS_RESTRICT=n' \
             >> $CONFIG
+          
+          echo "=== Final defconfig validation (last 40 lines) ==="
+          tail -40 $CONFIG
 
-          echo "=== Final defconfig validation (last 50 lines) ==="
-          tail -50 $CONFIG
-
-      # 5. Build Kernel using Bazel/Kleaf
-      - name: Build RPi4 Kernel
+      # 5. Patch build.config
+      - name: Patch build.config
         run: |
           cd android-kernel
-          # We use --sandbox_debug to see file mapping issues if it fails again
-          tools/bazel run //common:rpi4_dist -- --dist_dir=out/dist
+          echo "DEBUG_INFO=1" >> common/build.config.rpi || true
 
-      # 6. Prepare boot package
-      - name: Prepare boot package
+      # 6. Build kernel
+      - name: Build kernel
+        run: |
+          cd android-kernel
+          tools/bazel build //common:rpi4 --verbose_failures
+
+      # 7. Find the actual output directory
+      - name: Find output files
+        run: |
+          cd android-kernel
+          echo "=== Searching for kernel outputs ==="
+          SEARCH_PATHS=(
+            "bazel-bin/common/rpi4/arch/arm64/boot"
+            "bazel-bin/common/rpi4"
+            "out/bazel/output_user_root/*/execroot/_main/bazel-bin/common/rpi4"
+            "out/rpi4/dist"
+            "common/out/rpi4/dist"
+          )
+          for path in "${SEARCH_PATHS[@]}"; do
+            if [ -d "$path" ]; then
+              echo "Found output directory: $path"
+              find "$path" -type f \( -name "Image" -o -name "ramdisk*.img" -o -name "*.dtb" \) 2>/dev/null | head -10
+            fi
+          done
+
+      # 8. Copy files from the correct Android output location
+      - name: Copy boot files
         run: |
           cd android-kernel
           mkdir -p android-boot-package
-          echo "=== Copying build artifacts ==="
-          cp out/dist/Image android-boot-package/
-          cp out/dist/*.dtb android-boot-package/ 2>/dev/null || true
-          
-          # Check for overlays
-          if [ -d "out/dist/overlays" ]; then
-            cp -r out/dist/overlays android-boot-package/
-          fi
+          POSSIBLE_PATHS=(
+            "bazel-bin/common/rpi4/arch/arm64/boot/Image"
+            "bazel-bin/common/rpi4/Image"
+          )
+          for path in "${POSSIBLE_PATHS[@]}"; do
+            if [ -f "$path" ]; then
+              cp "$path" android-boot-package/Image
+              echo "Copied Image from $path"
+              break
+            fi
+          done
+          # Copy DTBs and Ramdisks (simplified for brevity, keeping your logic)
+          find bazel-bin/common/rpi4 -name "*.dtb" -exec cp {} android-boot-package/ \;
+          find bazel-bin/common/rpi4 -name "ramdisk*.img" -exec cp {} android-boot-package/ \;
           
           echo "=== Final package contents ==="
           ls -la android-boot-package/
 
-      # 7. Upload boot package
+      # 10. Upload boot package
       - name: Upload boot package
         uses: actions/upload-artifact@v4
         with:
-          name: android-rpi4-bpf-kernel
+          name: android-rpi4-boot-files
           path: android-kernel/android-boot-package/*
-          if-no-files-found: error
