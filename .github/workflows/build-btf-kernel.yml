@@ -33,18 +33,19 @@ jobs:
           curl -L https://raw.githubusercontent.com/raspberry-vanilla/android_kernel_manifest/android-16.0/manifest_brcm_rpi.xml \
             -o .repo/local_manifests/rpi.xml
           repo sync -j$(nproc)
-      # 4. Patch defconfig (Kleaf-Compatible Version)
+      # 4. Patch defconfig (Optimized for Kleaf/Android 16)
       - name: Patch defconfig with critical tracing options
         run: |
           cd android-kernel
           CONFIG=common/arch/arm64/configs/android_rpi4_defconfig
           cp $CONFIG ${CONFIG}.backup
           
-          # 1. Clean out existing versions and ARCH-selected options (HAVE_*)
-          grep -v -E "CONFIG_DEBUG_FS|CONFIG_DEBUG_KERNEL|CONFIG_BPF|CONFIG_FTRACE|CONFIG_TRACING|CONFIG_DYNAMIC_FTRACE|CONFIG_KPROBE|CONFIG_UPROBE|CONFIG_RETPROBES|CONFIG_PROBE_EVENTS|CONFIG_EVENT_TRACING|CONFIG_PERF_EVENTS|CONFIG_ANON_INODES|CONFIG_DEBUG_INFO|CONFIG_KALLSYMS|CONFIG_IKCONFIG|CONFIG_FRAME_POINTER|CONFIG_STRIP_ASM_SYMS|CONFIG_STRICT_KERNEL_RWX|CONFIG_STRICT_MODULE_RWX|CONFIG_SECURITY_SELINUX_DEVELOP|CONFIG_SECURITY_PERF_EVENTS_RESTRICT|CONFIG_CGROUP_BPF|CONFIG_HAVE_EBPF_JIT|CONFIG_HAVE_SYSCALL_TRACEPOINTS|CONFIG_HAVE_PERF_EVENTS" \
+          # 1. Clean out existing versions. 
+          # Note: We removed ANON_INODES and STRICT_RWX from here to let the system manage them.
+          grep -v -E "CONFIG_DEBUG_FS|CONFIG_DEBUG_KERNEL|CONFIG_BPF|CONFIG_FTRACE|CONFIG_TRACING|CONFIG_DYNAMIC_FTRACE|CONFIG_KPROBE|CONFIG_UPROBE|CONFIG_RETPROBES|CONFIG_PROBE_EVENTS|CONFIG_EVENT_TRACING|CONFIG_PERF_EVENTS|CONFIG_DEBUG_INFO|CONFIG_KALLSYMS|CONFIG_IKCONFIG|CONFIG_FRAME_POINTER|CONFIG_STRIP_ASM_SYMS|CONFIG_SECURITY_SELINUX_DEVELOP|CONFIG_SECURITY_PERF_EVENTS_RESTRICT|CONFIG_CGROUP_BPF" \
             ${CONFIG}.backup > $CONFIG
 
-          # 2. Append Kleaf-friendly options
+          # 2. Append only the symbols that are user-settable
           printf '%s\n' \
             'CONFIG_DEBUG_FS=y' \
             'CONFIG_DEBUG_KERNEL=y' \
@@ -60,15 +61,12 @@ jobs:
             'CONFIG_DYNAMIC_FTRACE=y' \
             'CONFIG_FTRACE_SYSCALLS=y' \
             'CONFIG_KPROBES=y' \
-            'CONFIG_KPROBES_ON_FTRACE=y' \
             'CONFIG_KPROBE_EVENTS=y' \
             'CONFIG_UPROBES=y' \
             'CONFIG_UPROBE_EVENTS=y' \
-            'CONFIG_RETPROBES=y' \
             'CONFIG_PROBE_EVENTS=y' \
             'CONFIG_EVENT_TRACING=y' \
             'CONFIG_PERF_EVENTS=y' \
-            'CONFIG_ANON_INODES=y' \
             'CONFIG_DEBUG_INFO=y' \
             'CONFIG_DEBUG_INFO_BTF=y' \
             'CONFIG_DEBUG_INFO_DWARF5=y' \
@@ -78,14 +76,12 @@ jobs:
             'CONFIG_IKCONFIG_PROC=y' \
             'CONFIG_FRAME_POINTER=y' \
             'CONFIG_STRIP_ASM_SYMS=n' \
-            '# CONFIG_STRICT_KERNEL_RWX is not set' \
-            '# CONFIG_STRICT_MODULE_RWX is not set' \
             'CONFIG_SECURITY_SELINUX_DEVELOP=y' \
             'CONFIG_SECURITY_PERF_EVENTS_RESTRICT=n' \
             >> $CONFIG
 
-          echo "=== Verified defconfig content ==="
-          grep -E "CONFIG_RETPROBES|CONFIG_STRICT|CONFIG_ANON_INODES" $CONFIG
+          echo "=== Verified Defconfig (Last 40 lines) ==="
+          tail -40 $CONFIG
       # 5. Patch build.config
       - name: Patch build.config
         run: |
